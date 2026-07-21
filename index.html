@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/pizzip@3.2.0/dist/pizzip.min.js"></script>
 <script src="https://unpkg.com/docxtemplater@3.66.0/build/docxtemplater.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
 @keyframes pulse-yellow {
@@ -762,10 +763,76 @@ let draggedElement = null;
 // Keep maintenance data in this browser so it remains after a refresh.
 const APP_STORAGE_KEY = 'smartFactoryMaintenanceState_v1';
 
+// Real-time database settings.  Paste the Project URL and the anon public key
+// from Supabase here.  The anon key is intended for browser use; never paste a
+// service_role key into this file.
+const SUPABASE_URL = 'https://iuuphxnfrnunxrprfhoz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_YvADNOHsfT6T3VLYMDPNcA_owAKsS54';
+const SUPABASE_STATE_TABLE = 'factory_app_state';
+const SUPABASE_STATE_ID = 'main';
+let supabaseClient = null;
+let remoteSyncState = 'disabled';
+let remoteSaveTimer = null;
+let applyingRemoteState = false;
+
+function appStateSnapshot() {
+  return { machinesState, technicians, deptList, staffList, inspectorList, PREDEFINED_PROBLEMS, historyDataLog, ticketsState, sparePartsLog, machineMasterPartsState, pmHistoryLog };
+}
+
+function refreshAfterRemoteRestore() {
+  syncMasterDataToDOM();
+  populateFormChecklists();
+  populatePMDropdowns();
+  renderDashboardCards();
+  window.renderMasterPartsManager?.();
+  window.renderPMEntryRows?.();
+  window.renderTicketWorkflowUI?.();
+  window.updateTicketWorkflowUI?.();
+  window.updateTicketMenuBadges?.();
+  window.updatePmMenuAlert?.();
+}
+
+function queueRemoteSave() {
+  if (remoteSyncState !== 'ready' || applyingRemoteState || !supabaseClient) return;
+  clearTimeout(remoteSaveTimer);
+  remoteSaveTimer = setTimeout(async () => {
+    const { error } = await supabaseClient.from(SUPABASE_STATE_TABLE).upsert({ id: SUPABASE_STATE_ID, data: appStateSnapshot(), updated_at: new Date().toISOString() });
+    if (error) console.warn('Unable to save shared application data', error.message);
+  }, 400);
+}
+
+async function startRealtimeSync() {
+  if (!window.supabase || SUPABASE_URL.startsWith('PASTE_') || SUPABASE_ANON_KEY.startsWith('PASTE_')) return;
+  remoteSyncState = 'connecting';
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data, error } = await supabaseClient.from(SUPABASE_STATE_TABLE).select('data').eq('id', SUPABASE_STATE_ID).maybeSingle();
+  if (error) { console.warn('Unable to load shared application data', error.message); remoteSyncState = 'disabled'; return; }
+  if (data?.data) {
+    applyingRemoteState = true;
+    restoreAppState(data.data);
+    refreshAfterRemoteRestore();
+    applyingRemoteState = false;
+  } else {
+    const { error: seedError } = await supabaseClient.from(SUPABASE_STATE_TABLE).upsert({ id: SUPABASE_STATE_ID, data: appStateSnapshot(), updated_at: new Date().toISOString() });
+    if (seedError) { console.warn('Unable to create shared application data', seedError.message); remoteSyncState = 'disabled'; return; }
+  }
+  remoteSyncState = 'ready';
+  supabaseClient.channel('factory-app-state')
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: SUPABASE_STATE_TABLE, filter: `id=eq.${SUPABASE_STATE_ID}` }, payload => {
+      if (!payload.new?.data) return;
+      applyingRemoteState = true;
+      restoreAppState(payload.new.data);
+      refreshAfterRemoteRestore();
+      applyingRemoteState = false;
+    })
+    .subscribe();
+}
+
 function saveAppState() {
-  const state = { machinesState, technicians, deptList, staffList, inspectorList, PREDEFINED_PROBLEMS, historyDataLog, ticketsState, sparePartsLog, machineMasterPartsState, pmHistoryLog };
+  const state = appStateSnapshot();
   try { localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(state)); }
   catch (error) { console.warn('Unable to save application data', error); }
+  queueRemoteSave();
 }
 
 function loadAppState() {
@@ -802,6 +869,7 @@ document.addEventListener('submit', () => setTimeout(saveAppState, 0), true);
 window.addEventListener('beforeunload', saveAppState);
 setInterval(saveAppState, 1000);
 saveAppState();
+startRealtimeSync();
 });
 
 function initClock() { setInterval(() => { const now = new Date(); document.getElementById('liveClock').innerText = now.toTimeString().split(' ')[0]; }, 1000); }
