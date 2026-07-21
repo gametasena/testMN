@@ -2422,6 +2422,51 @@ applyLoggedInUser=function(){
 };
 logoutUser=function(){localStorage.removeItem(AUTH_STORAGE_KEY);localAuthMode='login';renderLocalAuth();};
 window.addEventListener('DOMContentLoaded',()=>setTimeout(applyLoggedInUser,0));
+
+/* Shared users v3: registration and admin approval work across devices. */
+const SHARED_AUTH_PASSWORD_KEY='smartFactorySharedSessionPassword';
+let sharedAccountRows=[],sharedAccountsPoll=null;
+function sharedDbClient(){return supabaseClient||(window.supabase?window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY):null);}
+function sharedAdminCredentials(){let user={};try{user=JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');}catch{}return{admin:user.username||'',password:sessionStorage.getItem(SHARED_AUTH_PASSWORD_KEY)||''};}
+async function finishSharedLogin(user,password){
+  finishInstantLocalLogin({username:user.username,name:user.name,role:user.role,approved:user.approved});
+  localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify({username:user.username,name:user.name,role:user.role,approved:user.approved,mode:'shared',loginAt:new Date().toISOString()}));
+  sessionStorage.setItem(SHARED_AUTH_PASSWORD_KEY,password);
+  if(user.role==='ผู้จัดการ'){clearInterval(sharedAccountsPoll);sharedAccountsPoll=setInterval(()=>{if(document.getElementById('accountRows'))renderAccounts();},10000);}
+}
+submitUnifiedLocalAuth=async function(event){
+  event.preventDefault();localAuthError();const client=sharedDbClient();if(!client)return localAuthError('เชื่อมต่อฐานข้อมูลไม่ได้');
+  const username=normalizeLocalUsername(document.getElementById('localUsername')?.value),password=document.getElementById('localPassword')?.value||'';
+  const submit=event.submitter;if(submit){submit.disabled=true;submit.textContent='กำลังตรวจสอบ...';}
+  try{
+    if(localAuthMode==='login'){
+      const {data,error}=await client.rpc('login_factory_user',{p_username:username,p_password:password});if(error)throw error;const user=data?.[0];
+      if(!user)throw new Error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');if(!user.approved)throw new Error('บัญชีนี้กำลังรอผู้ดูแลระบบอนุมัติ');await finishSharedLogin(user,password);return;
+    }
+    const name=document.getElementById('localDisplayName')?.value.trim(),confirmPassword=document.getElementById('localPasswordConfirm')?.value||'';
+    if(password.length<4)throw new Error('รหัสผ่านต้องมีอย่างน้อย 4 ตัว');if(password!==confirmPassword)throw new Error('รหัสผ่านทั้งสองช่องไม่ตรงกัน');
+    const {error}=await client.rpc('register_factory_user',{p_username:username,p_display_name:name,p_password:password});if(error)throw error;
+    localAuthMode='login';renderLocalAuth('สมัครสำเร็จแล้ว คำขอถูกส่งให้ผู้ดูแลทุกเครื่อง กรุณารออนุมัติ','success');
+  }catch(error){localAuthError(String(error.message||error).replace(/^.*?: /,''));if(submit){submit.disabled=false;submit.textContent=localAuthMode==='login'?'เข้าสู่ระบบ':'ส่งคำขอสมัครสมาชิก';}}
+};
+applyLoggedInUser=async function(){
+  const client=sharedDbClient();let saved={};try{saved=JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');}catch{}const password=sessionStorage.getItem(SHARED_AUTH_PASSWORD_KEY)||'';
+  if(!client||saved.mode!=='shared'||!saved.username||!password){localStorage.removeItem(AUTH_STORAGE_KEY);localAuthMode='login';renderLocalAuth();return;}
+  const {data,error}=await client.rpc('login_factory_user',{p_username:saved.username,p_password:password});const user=data?.[0];
+  if(error||!user?.approved){localStorage.removeItem(AUTH_STORAGE_KEY);sessionStorage.removeItem(SHARED_AUTH_PASSWORD_KEY);localAuthMode='login';renderLocalAuth(error?.message||'กรุณาเข้าสู่ระบบอีกครั้ง');return;}await finishSharedLogin(user,password);
+};
+logoutUser=function(){clearInterval(sharedAccountsPoll);localStorage.removeItem(AUTH_STORAGE_KEY);sessionStorage.removeItem(SHARED_AUTH_PASSWORD_KEY);localAuthMode='login';renderLocalAuth();};
+renderAccounts=async function(){
+  const body=document.getElementById('accountRows');if(!body)return;const client=sharedDbClient(),cred=sharedAdminCredentials();
+  const {data,error}=await client.rpc('admin_list_factory_users',{p_admin:cred.admin,p_password:cred.password});if(error){body.innerHTML=`<tr><td colspan="5" class="p-4 text-red-600">${esc(error.message)}</td></tr>`;return;}sharedAccountRows=data||[];
+  const head=body.closest('table')?.querySelector('thead tr');if(head)head.innerHTML='<th class="p-3 text-left">ชื่อผู้ใช้</th><th class="p-3 text-left">ชื่อแสดง</th><th class="p-3 text-left">บทบาท</th><th class="p-3 text-left">สถานะ</th><th class="p-3 text-left">จัดการ</th>';
+  body.innerHTML=sharedAccountRows.map(a=>`<tr class="border-t"><td class="p-3 font-bold">${esc(a.username)}</td><td class="p-3">${esc(a.name)}</td><td class="p-3">${esc(a.role)}</td><td class="p-3">${a.approved?'<span class="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800">ใช้งานได้</span>':'<span class="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>'}</td><td class="p-3 whitespace-nowrap">${!a.approved?`<button onclick="approveAccount('${esc(a.username)}')" class="mr-1 rounded bg-emerald-600 px-2 py-1 text-xs font-bold text-white">อนุมัติ</button>`:''}<button onclick="openAccountEditor('${esc(a.username)}')" class="rounded bg-sky-600 px-2 py-1 text-xs font-bold text-white">แก้ไข</button> <button onclick="deleteAccount('${esc(a.username)}')" class="rounded bg-red-600 px-2 py-1 text-xs font-bold text-white">ลบ</button></td></tr>`).join('');
+};
+approveAccount=async function(username){const c=sharedAdminCredentials(),{error}=await sharedDbClient().rpc('admin_approve_factory_user',{p_admin:c.admin,p_password:c.password,p_username:username});if(error)return alert(error.message);renderAccounts();};
+openAccountEditor=function(username=''){const modal=document.getElementById('accountModal');if(!modal)return;const a=sharedAccountRows.find(x=>x.username===username);document.getElementById('accountOriginalUsername').value=a?.username||'';document.getElementById('accountUsername').value=a?.username||'';document.getElementById('accountUsername').readOnly=!!a;document.getElementById('accountName').value=a?.name||'';document.getElementById('accountRole').value=a?.role||'ช่าง';document.getElementById('accountPassword').value='';document.getElementById('accountPassword').required=true;document.getElementById('accountModalTitle').textContent=a?'แก้ไขผู้ใช้ / ตั้งรหัสใหม่':'Admin สร้างบัญชีใหม่';modal.classList.replace('hidden','flex');};
+saveAccount=async function(event){event.preventDefault();const c=sharedAdminCredentials(),username=document.getElementById('accountUsername').value.trim().toLowerCase(),name=document.getElementById('accountName').value.trim(),role=document.getElementById('accountRole').value,password=document.getElementById('accountPassword').value;if(password.length<4)return alert('รหัสผ่านต้องมีอย่างน้อย 4 ตัว');const {error}=await sharedDbClient().rpc('admin_save_factory_user',{p_admin:c.admin,p_password:c.password,p_username:username,p_name:name,p_new_password:password,p_role:role});if(error)return alert(error.message);closeAccountEditor();renderAccounts();};
+deleteAccount=async function(username){if(!confirm(`ลบผู้ใช้ ${username}?`))return;const c=sharedAdminCredentials(),{error}=await sharedDbClient().rpc('admin_delete_factory_user',{p_admin:c.admin,p_password:c.password,p_username:username});if(error)return alert(error.message);renderAccounts();};
+window.addEventListener('DOMContentLoaded',()=>setTimeout(applyLoggedInUser,0));
 </script>
 </body>
 </html>
