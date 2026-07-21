@@ -2442,7 +2442,7 @@ async function finishSharedLogin(user,password){
   finishInstantLocalLogin({username:user.username,name:user.name,role:user.role,approved:user.approved});
   localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify({username:user.username,name:user.name,role:user.role,approved:user.approved,mode:'shared',loginAt:new Date().toISOString()}));
   sessionStorage.setItem(SHARED_AUTH_PASSWORD_KEY,password);
-  if(user.role==='ผู้จัดการ'){clearInterval(sharedAccountsPoll);sharedAccountsPoll=setInterval(()=>{if(document.getElementById('accountRows'))renderAccounts();},10000);}
+  if(user.role==='ผู้จัดการ'){clearInterval(sharedAccountsPoll);sharedAccountsPoll=setInterval(()=>{const active=document.activeElement,isEditing=active&&['INPUT','TEXTAREA','SELECT'].includes(active.tagName);if(document.getElementById('accountRows')&&!isEditing)renderAccounts();},10000);}
 }
 submitUnifiedLocalAuth=async function(event){
   event.preventDefault();localAuthError();const client=sharedDbClient();if(!client)return localAuthError('เชื่อมต่อฐานข้อมูลไม่ได้');
