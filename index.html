@@ -2011,6 +2011,9 @@ prepareRepairForm=function(machine,mode){
     const finishField=finishInput?.closest('div');
     if(!form)return;
     form.dataset.workflowMode=mode;
+    // Keep the card that started this workflow.  The select can be re-rendered
+    // by other UI updates, so it is not a reliable source when closing a job.
+    form.dataset.workflowMachine=String(machine.number);
     if(startInput){startInput.removeAttribute('readonly');startInput.required=true;}
     if(finishInput){finishInput.required=mode==='closing';}
     if(mode==='report'){
@@ -2033,7 +2036,7 @@ prepareRepairForm=function(machine,mode){
 const _completeRepairWorkflow=submitCloseRepair;
 submitCloseRepair=function(event){
   const form=document.getElementById('repairForm');
-  const machineNumber=document.getElementById('repairMachineSelect')?.value;
+  const machineNumber=form?.dataset.workflowMachine||document.getElementById('repairMachineSelect')?.value;
   const mode=form?.dataset.workflowMode;
   if(mode==='report'){
     event.preventDefault();
