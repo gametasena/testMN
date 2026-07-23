@@ -2442,7 +2442,7 @@ window.addEventListener('DOMContentLoaded',()=>setTimeout(applyLoggedInUser,0));
 /* Shared users v3: registration and admin approval work across devices. */
 const SHARED_AUTH_PASSWORD_KEY='smartFactorySharedSessionPassword';
 let sharedAccountRows=[],sharedAccountsPoll=null;
-function sharedDbClient(){return supabaseClient||(window.supabase?window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY):null);}
+function sharedDbClient(){return authClient();}
 function sharedAdminCredentials(){let user={};try{user=JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');}catch{}return{admin:user.username||'',password:sessionStorage.getItem(SHARED_AUTH_PASSWORD_KEY)||''};}
 async function finishSharedLogin(user,password){
   finishInstantLocalLogin({username:user.username,name:user.name,role:user.role,approved:user.approved});
