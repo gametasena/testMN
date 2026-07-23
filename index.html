@@ -2686,6 +2686,149 @@ renderAccounts=async function(){
 approveAccount=async function(username){const {error}=await sharedDbClient().rpc('admin_approve_factory_user',{p_token:productionToken(),p_username:username});if(error)return alert(error.message);renderAccounts();};
 saveAccount=async function(event){event.preventDefault();const username=document.getElementById('accountUsername').value.trim().toLowerCase(),name=document.getElementById('accountName').value.trim(),role=document.getElementById('accountRole').value,password=document.getElementById('accountPassword').value;if(password.length<10)return alert('รหัสผ่านต้องมีอย่างน้อย 10 ตัว');const {error}=await sharedDbClient().rpc('admin_save_factory_user',{p_token:productionToken(),p_username:username,p_name:name,p_new_password:password,p_role:role});if(error)return alert(error.message);closeAccountEditor();renderAccounts();};
 deleteAccount=async function(username){if(!confirm(`ลบผู้ใช้ ${username}?`))return;const {error}=await sharedDbClient().rpc('admin_delete_factory_user',{p_token:productionToken(),p_username:username});if(error)return alert(error.message);renderAccounts();};
+
+/* ===== Requested production refinements v5 (local test only) ===== */
+function requestedConfirm(message,title='ยืนยันการทำรายการ',confirmText='ตกลง'){
+  return new Promise(resolve=>{
+    let modal=document.getElementById('requestedConfirmModal');
+    if(!modal){
+      document.body.insertAdjacentHTML('beforeend',`<div id="requestedConfirmModal" class="fixed inset-0 z-[300] hidden items-center justify-center bg-slate-950/60 p-4"><div class="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"><div class="flex items-start gap-3"><span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700"><i class="fa-solid fa-circle-question"></i></span><div><h3 id="requestedConfirmTitle" class="font-black text-slate-900"></h3><p id="requestedConfirmMessage" class="mt-2 text-sm text-slate-600"></p></div></div><div class="mt-6 grid grid-cols-2 gap-3"><button id="requestedConfirmCancel" type="button" class="rounded-lg bg-slate-100 px-4 py-2.5 font-bold text-slate-700">ยกเลิก</button><button id="requestedConfirmOk" type="button" class="rounded-lg bg-amber-500 px-4 py-2.5 font-black text-slate-950">ตกลง</button></div></div></div>`);
+      modal=document.getElementById('requestedConfirmModal');
+    }
+    document.getElementById('requestedConfirmTitle').textContent=title;
+    document.getElementById('requestedConfirmMessage').textContent=message;
+    document.getElementById('requestedConfirmOk').textContent=confirmText;
+    const finish=value=>{modal.classList.replace('flex','hidden');resolve(value);};
+    document.getElementById('requestedConfirmCancel').onclick=()=>finish(false);
+    document.getElementById('requestedConfirmOk').onclick=()=>finish(true);
+    modal.classList.replace('hidden','flex');
+  });
+}
+
+/* 1. Dashboard confirmation, continuous/manual scrolling and safe hide/restore. */
+const requestedBaseMachineWorkflowAction=machineWorkflowAction;
+async function requestedMachineWorkflowAction(machineNumber){
+  const machine=(machinesState||[]).find(item=>String(item.number)===String(machineNumber));
+  if(!machine)return;
+  const stage=factoryStateStage(machine);
+  if(stage==='normal'){
+    const accepted=await requestedConfirm(`ต้องการแจ้งซ่อมเครื่อง #${machine.number} หรือไม่?`,'แจ้งซ่อมเครื่องจักร','ตกลง');
+    if(!accepted)return;
+  }
+  requestedBaseMachineWorkflowAction(machineNumber);
+}
+machineWorkflowAction=requestedMachineWorkflowAction;
+window.machineWorkflowAction=requestedMachineWorkflowAction;
+
+let requestedDashboardScrollTimer=null,requestedDashboardScrollDirection=1,requestedDashboardPauseUntil=0;
+function requestedDashboardScrollBy(amount){const grid=document.getElementById('machineGrid');if(!grid)return;requestedDashboardPauseUntil=Date.now()+10000;grid.scrollBy({top:amount,behavior:'smooth'});}
+function requestedToggleDashboardAutoScroll(){const button=document.getElementById('dashboardAutoScrollButton');if(requestedDashboardScrollTimer){clearInterval(requestedDashboardScrollTimer);requestedDashboardScrollTimer=null;if(button)button.innerHTML='<i class="fa-solid fa-play mr-1"></i>เลื่อนอัตโนมัติ';return;}requestedStartDashboardAutoScroll();}
+function requestedStartDashboardAutoScroll(){
+  if(requestedDashboardScrollTimer)return;
+  const button=document.getElementById('dashboardAutoScrollButton');if(button)button.innerHTML='<i class="fa-solid fa-pause mr-1"></i>หยุดเลื่อน';
+  requestedDashboardScrollTimer=setInterval(()=>{
+    const grid=document.getElementById('machineGrid');if(!grid||Date.now()<requestedDashboardPauseUntil||grid.scrollHeight<=grid.clientHeight+2)return;
+    if(grid.scrollTop+grid.clientHeight>=grid.scrollHeight-2)requestedDashboardScrollDirection=-1;
+    else if(grid.scrollTop<=1)requestedDashboardScrollDirection=1;
+    grid.scrollTop+=requestedDashboardScrollDirection;
+  },45);
+}
+function requestedEnsureDashboardScroller(){
+  const grid=document.getElementById('machineGrid');if(!grid)return;
+  grid.style.maxHeight='68vh';grid.style.overflowY='auto';grid.style.scrollBehavior='smooth';grid.style.paddingRight='4px';
+  if(!grid.dataset.scrollBound){grid.dataset.scrollBound='1';['wheel','touchstart','pointerdown'].forEach(type=>grid.addEventListener(type,()=>{requestedDashboardPauseUntil=Date.now()+10000;},{passive:true}));}
+  if(!document.getElementById('dashboardScrollControls'))grid.insertAdjacentHTML('beforebegin',`<div id="dashboardScrollControls" class="mb-3 flex flex-wrap items-center justify-end gap-2"><button type="button" onclick="requestedRestoreHiddenMachine()" class="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white" title="นำไอคอนที่ซ่อนกลับมา"><i class="fa-solid fa-plus mr-1"></i>เพิ่มไอคอน</button><button type="button" onclick="requestedDashboardScrollBy(-300)" class="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold"><i class="fa-solid fa-arrow-up"></i></button><button id="dashboardAutoScrollButton" type="button" onclick="requestedToggleDashboardAutoScroll()" class="rounded-lg bg-slate-700 px-3 py-2 text-xs font-bold text-white"><i class="fa-solid fa-pause mr-1"></i>หยุดเลื่อน</button><button type="button" onclick="requestedDashboardScrollBy(300)" class="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold"><i class="fa-solid fa-arrow-down"></i></button></div>`);
+  requestedStartDashboardAutoScroll();
+}
+async function hideDashboardMachine(machineNumber){
+  const accepted=await requestedConfirm(`ต้องการซ่อนไอคอนเครื่อง #${machineNumber} จาก Dashboard หรือไม่? สามารถกด + เพิ่มไอคอนเพื่อนำกลับมาได้`,'ซ่อนไอคอนเครื่องจักร','ตกลง');
+  if(!accepted)return;
+  const hidden=dashboardHiddenMachines();hidden.add(String(machineNumber));localStorage.setItem(DASHBOARD_HIDDEN_MACHINES_KEY,JSON.stringify([...hidden]));renderDashboardCards();
+}
+function requestedRestoreHiddenMachine(){
+  const hidden=[...dashboardHiddenMachines()];
+  if(!hidden.length){showFactoryToast?.('ไม่มีไอคอนเครื่องที่ถูกซ่อน','success');return;}
+  let modal=document.getElementById('requestedRestoreMachineModal');
+  if(!modal){document.body.insertAdjacentHTML('beforeend','<div id="requestedRestoreMachineModal" class="fixed inset-0 z-[290] hidden items-center justify-center bg-slate-950/60 p-4"><div class="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"><h3 class="font-black">เพิ่มไอคอนกลับ Dashboard</h3><div id="requestedHiddenMachineList" class="mt-4 grid max-h-72 grid-cols-2 gap-2 overflow-y-auto"></div><button type="button" onclick="document.getElementById(\'requestedRestoreMachineModal\').classList.replace(\'flex\',\'hidden\')" class="mt-4 w-full rounded-lg bg-slate-100 py-2 font-bold">ปิด</button></div></div>');modal=document.getElementById('requestedRestoreMachineModal');}
+  document.getElementById('requestedHiddenMachineList').innerHTML=hidden.map(number=>`<button type="button" onclick="requestedRestoreOneMachine('${esc(number)}')" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 font-bold text-emerald-800"><i class="fa-solid fa-plus mr-1"></i>เครื่อง #${esc(number)}</button>`).join('');
+  modal.classList.replace('hidden','flex');
+}
+function requestedRestoreOneMachine(machineNumber){const hidden=dashboardHiddenMachines();hidden.delete(String(machineNumber));localStorage.setItem(DASHBOARD_HIDDEN_MACHINES_KEY,JSON.stringify([...hidden]));document.getElementById('requestedRestoreMachineModal')?.classList.replace('flex','hidden');renderDashboardCards();}
+const requestedBaseDashboardRender=renderDashboardCards;
+renderDashboardCards=function(){
+  requestedBaseDashboardRender();requestedEnsureDashboardScroller();
+  document.querySelectorAll('#machineGrid [data-machine-number]').forEach(card=>{const number=card.dataset.machineNumber;card.setAttribute('onclick',`requestedMachineWorkflowAction('${esc(number)}')`);const remove=card.querySelector('[data-dashboard-remove]');if(remove&&remove.tagName==='BUTTON'){const icon=document.createElement('span');icon.dataset.dashboardRemove='';icon.setAttribute('role','button');icon.setAttribute('tabindex','0');icon.title='ซ่อนไอคอน';icon.className=remove.className;icon.innerHTML='<i class="fa-solid fa-trash-can"></i>';icon.onclick=event=>{event.stopPropagation();hideDashboardMachine(number);};icon.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();hideDashboardMachine(number);}};remove.replaceWith(icon);}});
+};
+
+/* 2. Export by day, month or year. */
+function requestedEnsureExportPeriodControls(){
+  const modal=document.getElementById('excelExportModal');if(!modal||document.getElementById('excelPeriodControls'))return;
+  const machineSection=document.getElementById('excelMachineChoices')?.parentElement;
+  machineSection?.insertAdjacentHTML('beforebegin',`<div id="excelPeriodControls" class="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4"><b class="text-sm">เลือกช่วงวันที่ส่งออก</b><div class="mt-3 grid gap-2 sm:grid-cols-2"><select id="excelPeriodType" onchange="requestedUpdateExportPeriodInputs()" class="rounded-lg border bg-white p-2 text-sm"><option value="all">ทั้งหมด</option><option value="day">เลือกวัน</option><option value="month">เลือกเดือน</option><option value="year">เลือกปี</option></select><input id="excelPeriodDay" type="date" class="hidden rounded-lg border bg-white p-2 text-sm"><input id="excelPeriodMonth" type="month" class="hidden rounded-lg border bg-white p-2 text-sm"><input id="excelPeriodYear" type="number" min="2000" max="2600" value="${new Date().getFullYear()}" class="hidden rounded-lg border bg-white p-2 text-sm" placeholder="ปี ค.ศ."></div></div>`);
+}
+function requestedUpdateExportPeriodInputs(){const type=document.getElementById('excelPeriodType')?.value||'all';['Day','Month','Year'].forEach(name=>document.getElementById(`excelPeriod${name}`)?.classList.toggle('hidden',type!==name.toLowerCase()));}
+function requestedDateMatchesExport(value){if(!value)return false;const date=String(value).slice(0,10),type=document.getElementById('excelPeriodType')?.value||'all';if(type==='all')return true;if(type==='day')return date===document.getElementById('excelPeriodDay')?.value;if(type==='month')return date.slice(0,7)===document.getElementById('excelPeriodMonth')?.value;if(type==='year'){let year=String(document.getElementById('excelPeriodYear')?.value||'');if(Number(year)>2400)year=String(Number(year)-543);return date.slice(0,4)===year;}return true;}
+const requestedBaseOpenExcelExport=openExcelExport;
+openExcelExport=function(){requestedBaseOpenExcelExport();requestedEnsureExportPeriodControls();requestedUpdateExportPeriodInputs();};
+exportRows=function(){
+  const selected=[...document.querySelectorAll('.excel-machine:checked')].map(item=>item.value),other=document.getElementById('excelOtherMachines')?.checked,known=new Set((machinesState||[]).map(machine=>String(machine.number))),machineOf=value=>String(value||'').replace(/^#?เครื่อง\s*/,'').trim(),keepMachine=value=>{const machine=machineOf(value);return selected.includes(machine)||(other&&!known.has(machine));};
+  const tickets=(ticketsState||[]).filter(ticket=>keepMachine(ticket.target)&&requestedDateMatchesExport(ticket.date||ticket.rawFinishDate||ticket.inspectorDate)).map(ticket=>({'เลขที่ใบแจ้งซ่อม':ticket.id,'เครื่อง':ticket.target||'อื่น ๆ','ผู้แจ้ง':ticket.reporter||'','ผู้ซ่อม':ticket.tech||'','ผู้ตรวจสอบ':ticket.inspectorName||'','อาการ':ticket.problem||'','สาเหตุ':ticket.cause||'','การแก้ไข':ticket.actionTaken||'','อะไหล่':ticket.spareParts||'','วันที่แจ้ง':thaiDate(ticket.date),'วันที่ปิด':thaiDate(ticket.rawFinishDate||ticket.inspectorDate),'ระยะเวลา (นาที)':ticket.duration||'','สถานะ':ticket.status||''}));
+  const pm=pmRowsWithConfiguredAlert().filter(part=>keepMachine(part.machine)&&requestedDateMatchesExport(part.lastDate||part.nextDate)).map(part=>({'เครื่อง':part.machine||'อื่น ๆ','อะไหล่':part.partName||'','รหัสอะไหล่':(part.partCodes?.length?part.partCodes:[part.partCode]).filter(Boolean).join(', '),'เปลี่ยนล่าสุด':thaiDate(part.lastDate),'วันที่ PM ถัดไป':thaiDate(part.nextDate),'สถานะ':part.status}));
+  const repairs=(historyDataLog||[]).filter(item=>keepMachine(item.machine)&&requestedDateMatchesExport(item.date)).map(item=>({'วันที่':thaiDate(item.date),'เครื่อง':item.machine||'อื่น ๆ','ผู้ซ่อม':item.tech||'','อาการ':item.problem||'','ระยะเวลา (นาที)':item.duration||'','สถานะ':item.status||''}));
+  return{tickets,pm,repairs};
+};
+
+/* 3. QR scan performs the same machine action as the dashboard icon. */
+function openMachineRepairFromQR(attempt=0){
+  const machineNumber=decodeURIComponent((location.hash.match(/^#report-machine=(.*)$/)||[])[1]||'');if(!machineNumber)return;
+  const machine=(machinesState||[]).find(item=>String(item.number)===String(machineNumber));if(!machine&&attempt<10){setTimeout(()=>openMachineRepairFromQR(attempt+1),500);return;}if(!machine)return;
+  let user={};try{user=JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');}catch{}
+  if(!user.username&&attempt<20){setTimeout(()=>openMachineRepairFromQR(attempt+1),500);return;}
+  history.replaceState(null,'',location.pathname+location.search);switchView('dashboard');setTimeout(()=>requestedMachineWorkflowAction(machine.number),100);
+}
+
+/* 4 and 6. Always-on speech after the first mobile gesture and inspector alert template. */
+FACTORY_ALERT_DEFAULTS.inspection='ช่างดำเนินงานซ่อมเสร็จแล้ว กรุณาตรวจสอบ ใบงาน {ticket} เครื่อง {machine}';
+const requestedBaseFactoryAlertSettings=factoryAlertSettings;
+factoryAlertSettings=function(){const settings=requestedBaseFactoryAlertSettings();return{...settings,enabled:true,speech:true,inspection:settings.inspection||FACTORY_ALERT_DEFAULTS.inspection};};
+saveFactoryAlertSettings=function(){const get=id=>document.getElementById(id),settings={enabled:true,speech:true,systemNotification:get('alertSystemNotification')?.checked!==false,volume:Number(get('alertVolume')?.value||1),rate:Number(get('alertRate')?.value||0.9),language:get('alertLanguage')?.value||'th-TH',voice:get('alertVoice')?.value||'',broken:get('alertBrokenTemplate')?.value.trim()||FACTORY_ALERT_DEFAULTS.broken,repairing:get('alertRepairTemplate')?.value.trim()||FACTORY_ALERT_DEFAULTS.repairing,completed:get('alertCompleteTemplate')?.value.trim()||FACTORY_ALERT_DEFAULTS.completed,ticket:get('alertTicketTemplate')?.value.trim()||FACTORY_ALERT_DEFAULTS.ticket,inspection:get('alertInspectionTemplate')?.value.trim()||FACTORY_ALERT_DEFAULTS.inspection};localStorage.setItem(FACTORY_ALERT_SETTINGS_KEY,JSON.stringify(settings));showFactoryToast('บันทึกการตั้งค่าเสียงภาษาไทยและแจ้งเตือนแล้ว','success');};
+const requestedBaseEnsureFactoryAlertSettings=ensureFactoryAlertSettings;
+ensureFactoryAlertSettings=function(){requestedBaseEnsureFactoryAlertSettings();const enabled=document.getElementById('alertEnabled'),speech=document.getElementById('alertSpeech');[enabled,speech].forEach(input=>{if(input){input.checked=true;input.disabled=true;}});const ticket=document.getElementById('alertTicketTemplate');if(ticket&&!document.getElementById('alertInspectionTemplate'))ticket.closest('label')?.insertAdjacentHTML('afterend',`<label class="text-xs font-semibold">ข้อความเมื่อมีใบงานรอผู้ตรวจสอบ<input id="alertInspectionTemplate" value="${esc(factoryAlertSettings().inspection)}" class="mt-1 w-full rounded border p-2"></label>`);const status=document.getElementById('alertPermissionStatus');if(status)status.textContent='เสียงเปิดตลอด · บนโทรศัพท์ให้แตะหน้าจอหนึ่งครั้งหลังเปิดเว็บเพื่อปลดล็อกเสียง';};
+let requestedSpeechUnlocked=false;
+async function requestedUnlockMobileAlerts(){if(requestedSpeechUnlocked)return;requestedSpeechUnlocked=true;try{if('speechSynthesis'in window){speechSynthesis.resume();const unlock=new SpeechSynthesisUtterance(' ');unlock.lang='th-TH';unlock.volume=0;speechSynthesis.speak(unlock);}if('Notification'in window&&Notification.permission==='default')await Notification.requestPermission();}catch{}setTimeout(()=>{if('speechSynthesis'in window)speechSynthesis.resume();},200);}
+document.addEventListener('pointerdown',requestedUnlockMobileAlerts,{once:true,capture:true});document.addEventListener('touchstart',requestedUnlockMobileAlerts,{once:true,capture:true,passive:true});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&'speechSynthesis'in window)speechSynthesis.resume();});
+processFactoryRealtimeAlerts=function(previous,next){if(!previous||!next)return;const known=new Set((previous.factoryAlertEvents||[]).map(event=>event.id)),settings=factoryAlertSettings();for(const event of(next.factoryAlertEvents||[])){if(known.has(event.id)||!claimFactoryAlertEvent(event.id))continue;const data=event.data||{};if(event.type==='broken')speakFactoryAlert(factoryFormatAlert(settings.broken,data),'แจ้งเครื่องเสีย');else if(event.type==='repairing')speakFactoryAlert(factoryFormatAlert(settings.repairing,data),'ช่างกำลังซ่อม');else if(event.type==='completed')speakFactoryAlert(factoryFormatAlert(settings.completed,data),'ซ่อมเสร็จแล้ว');else if(event.type==='ticket')speakFactoryAlert(factoryFormatAlert(settings.ticket,data),'ใบแจ้งซ่อมใหม่');else if(event.type==='inspection')speakFactoryAlert(factoryFormatAlert(settings.inspection,data),'มีใบงานรอตรวจสอบ');}};
+const requestedBaseSaveCloseTicketData=saveCloseTicketData;
+saveCloseTicketData=function(){const id=document.getElementById('closeTicketId')?.value;requestedBaseSaveCloseTicketData();const ticket=(ticketsState||[]).find(item=>String(item.id)===String(id));if(ticket)recordFactoryAlert('inspection',{ticket:ticket.id,machine:ticket.target,tech:ticket.tech||activeUserName(),problem:ticket.problem||''});};
+
+/* 5 and 11. Separate clear-history buttons. */
+async function requestedClearRepairHistoryOnly(){if(!(await requestedConfirm('ต้องการล้างเฉพาะประวัติการซ่อมทั้งหมดหรือไม่? ใบแจ้งซ่อมและประวัติ PM จะไม่ถูกลบ','ล้างประวัติการซ่อม','ล้างประวัติ')))return;historyDataLog=[];saveAppState();renderHistoryTable();updateStatisticsReports();showFactoryToast('ล้างประวัติการซ่อมแล้ว','success');}
+async function requestedClearStatisticsHistory(){if(!(await requestedConfirm('ต้องการล้างข้อมูลประวัติการซ่อมที่ใช้คำนวณสถิติหรือไม่? ใบแจ้งซ่อมและ PM จะยังคงอยู่','ล้างประวัติสถิติ','ล้างประวัติ')))return;historyDataLog=[];saveAppState();renderHistoryTable();updateStatisticsReports();showFactoryToast('ล้างประวัติสถิติแล้ว','success');}
+function requestedEnsureHistoryClearButtons(){const history=document.getElementById('view-history'),statistics=document.getElementById('view-statistics');if(history&&!document.getElementById('clearRepairHistoryButton'))history.insertAdjacentHTML('afterbegin','<div class="flex justify-end"><button id="clearRepairHistoryButton" type="button" onclick="requestedClearRepairHistoryOnly()" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white"><i class="fa-solid fa-trash-can mr-1"></i>ล้างประวัติการซ่อม</button></div>');if(statistics&&!document.getElementById('clearStatisticsHistoryButton'))statistics.insertAdjacentHTML('afterbegin','<div class="flex justify-end"><button id="clearStatisticsHistoryButton" type="button" onclick="requestedClearStatisticsHistory()" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white"><i class="fa-solid fa-trash-can mr-1"></i>ล้างประวัติสถิติ</button></div>');}
+
+/* 7. Real select controls for ticket entry on mobile. */
+function requestedMobileSelect(inputId,selectId,label,items){const input=document.getElementById(inputId);if(!input)return;let select=document.getElementById(selectId);if(!select){input.insertAdjacentHTML('afterend',`<select id="${selectId}" onchange="document.getElementById('${inputId}').value=this.value" class="mt-2 w-full rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm md:hidden"><option value="">${label}</option></select>`);select=document.getElementById(selectId);}const current=select.value;select.innerHTML=`<option value="">${label}</option>`+[...new Set(items.filter(Boolean).map(String))].map(value=>`<option value="${esc(value)}">${esc(value)}</option>`).join('');if([...select.options].some(option=>option.value===current))select.value=current;}
+function requestedEnsureMobileTicketSelectors(){
+  const view=document.getElementById('view-ticket');if(!view)return;
+  const tabs=view.querySelector('.grid.grid-cols-2.lg\\:grid-cols-4');if(tabs&&!document.getElementById('mobileTicketTabSelect'))tabs.insertAdjacentHTML('beforebegin','<select id="mobileTicketTabSelect" onchange="switchTicketTab(this.value)" class="w-full rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm font-bold md:hidden"><option value="tab-form">1. ฟอร์มแจ้งซ่อม</option><option value="tab-tech">2. สำหรับผู้ซ่อม</option><option value="tab-inspector">3. สำหรับผู้ตรวจสอบ</option><option value="tab-history">4. ประวัติแจ้งซ่อม</option></select>');
+  requestedMobileSelect('tktTarget','mobileTicketMachineSelect','เลือกรายการเครื่องจักร',(machinesState||[]).map(machine=>machine.number));requestedMobileSelect('tktDept','mobileTicketDepartmentSelect','เลือกรายการแผนก',deptList||[]);requestedMobileSelect('tktProblem','mobileTicketProblemSelect','เลือกรายการอาการเสีย',PREDEFINED_PROBLEMS||[]);requestedMobileSelect('tktReporter','mobileTicketReporterSelect','เลือกรายการผู้แจ้ง',staffList||[]);
+}
+const requestedBaseSwitchTicketTab=switchTicketTab;
+switchTicketTab=function(tabId){requestedBaseSwitchTicketTab(tabId);const select=document.getElementById('mobileTicketTabSelect');if(select)select.value=tabId;};
+
+/* 9. Admin session persists across browser restarts; server-side SQL extends admin expiry. */
+const REQUESTED_ADMIN_TOKEN_KEY='smartFactoryPersistentAdminSession_v1';
+productionToken=function(){return sessionStorage.getItem(PROD_SESSION_TOKEN_KEY)||localStorage.getItem(REQUESTED_ADMIN_TOKEN_KEY)||'';};
+const requestedBaseFinishProductionLogin=finishProductionLogin;
+finishProductionLogin=async function(user,token){await requestedBaseFinishProductionLogin(user,token);if(String(user.username).toLowerCase()==='admin')localStorage.setItem(REQUESTED_ADMIN_TOKEN_KEY,token);else localStorage.removeItem(REQUESTED_ADMIN_TOKEN_KEY);ensureFactoryAlertSettings();requestedEnsureMobileTicketSelectors();setTimeout(()=>openMachineRepairFromQR(),100);};
+logoutUser=async function(){clearInterval(productionPollTimer);const token=productionToken();if(token)try{await sharedDbClient().rpc('logout_factory_session',{p_token:token});}catch{}sessionStorage.removeItem(PROD_SESSION_TOKEN_KEY);localStorage.removeItem(REQUESTED_ADMIN_TOKEN_KEY);localStorage.removeItem(AUTH_STORAGE_KEY);localAuthMode='login';renderLocalAuth();};
+
+/* 10. Four characters for normal users; ten characters for admin only. */
+const requestedBaseOpenAccountEditor=openAccountEditor;
+openAccountEditor=function(username=''){requestedBaseOpenAccountEditor(username);const password=document.getElementById('accountPassword'),hint=password?.nextElementSibling;if(password){const minimum=String(username).toLowerCase()==='admin'?10:4;password.minLength=minimum;password.placeholder=`อย่างน้อย ${minimum} ตัว`;}if(hint)hint.textContent=String(username).toLowerCase()==='admin'?'บัญชี admin ต้องใช้รหัสอย่างน้อย 10 ตัว':'ผู้ใช้งานทั่วไปใช้รหัสอย่างน้อย 4 ตัว';};
+saveAccount=async function(event){event.preventDefault();const username=document.getElementById('accountUsername').value.trim().toLowerCase(),name=document.getElementById('accountName').value.trim(),role=document.getElementById('accountRole').value,password=document.getElementById('accountPassword').value,minimum=username==='admin'?10:4;if(password.length<minimum)return alert(`รหัสผ่าน ${username==='admin'?'admin':'ผู้ใช้งาน'} ต้องมีอย่างน้อย ${minimum} ตัว`);const {error}=await sharedDbClient().rpc('admin_save_factory_user',{p_token:productionToken(),p_username:username,p_name:name,p_new_password:password,p_role:role});if(error)return alert(error.message);closeAccountEditor();renderAccounts();};
+
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{requestedEnsureHistoryClearButtons();requestedEnsureMobileTicketSelectors();requestedEnsureExportPeriodControls();ensureFactoryAlertSettings();renderDashboardCards();openMachineRepairFromQR();},1000));
 </script>
 </body>
 </html>
