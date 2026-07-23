@@ -2535,6 +2535,8 @@ async function buildFmMnTicketPdf(ticket){
   put(252,180,ticket.target,215);put(880,180,ticket.dept,185);put(460,215,ticket.problem,610);put(473,319,fmMnThaiDate(ticket.dueDate),120);
   put(160,355,ticket.reporter,185);put(160,390,date,115);put(843,355,ticket.recipient||ticket.tech,170);put(875,390,date,145);
   put(185,429,ticket.cause,570);put(270,495,ticket.actionTaken,650);put(276,568,ticket.duration?`${ticket.duration} นาที`:'',315);put(213,606,ticket.spareParts,380);
+  // Remove only the two unused dotted tails to the right of Cause and Repair.
+  erasures.push({x:748,y:411,width:365,height:22},{x:915,y:477,width:200,height:22});
   put(165,779,ticket.tech,210);put(165,814,finish,145);put(776,779,ticket.inspectorName,250);put(776,814,fmMnThaiDate(ticket.inspectorDate),145);
   const tick=(cx,cy)=>{ctx.lineWidth=2.8;ctx.beginPath();ctx.moveTo(cx-7,cy);ctx.lineTo(cx-2,cy+6);ctx.lineTo(cx+8,cy-7);ctx.stroke();};
   if(ticket.inspectorName||ticket.inspectorDate||ticket.ticketStage==='completed') [600,633,668].forEach(y=>tick(641,y));
@@ -3079,11 +3081,21 @@ function v8DeviceSpeech(text,settings=factoryAlertSettings()){
   if(voice)utterance.voice=voice;utterance.lang=settings.language||'th-TH';utterance.volume=settings.volume;utterance.rate=settings.rate;utterance.pitch=1;speechSynthesis.speak(utterance);
 }
 function v8PlayRecordedVoice(mode,title,settings=factoryAlertSettings()){
-  if(v8VoiceAudio){try{v8VoiceAudio.pause();v8VoiceAudio.currentTime=0;}catch{}}
+  if(!v8VoiceAudio){v8VoiceAudio=new Audio();v8VoiceAudio.preload='auto';}
+  try{v8VoiceAudio.pause();v8VoiceAudio.currentTime=0;}catch{}
   const key=v8VoiceFileKey(title),url=new URL(`voice-${mode}-${key}.mp3`,location.href).href;
-  const audio=new Audio(url);v8VoiceAudio=audio;audio.volume=Math.max(0,Math.min(1,Number(settings.volume)||1));audio.playbackRate=Math.max(.75,Math.min(1.25,Number(settings.rate)||.9));
-  return audio.play();
+  v8VoiceAudio.src=url;v8VoiceAudio.muted=false;v8VoiceAudio.volume=Math.max(0,Math.min(1,Number(settings.volume)||1));v8VoiceAudio.playbackRate=Math.max(.75,Math.min(1.25,Number(settings.rate)||.9));
+  return v8VoiceAudio.play();
 }
+function v9PersistVoiceMode(mode){
+  if(!V8_VOICE_MODES[mode])mode='device';let settings={};try{settings=JSON.parse(localStorage.getItem(FACTORY_ALERT_SETTINGS_KEY)||'{}');}catch{}settings.voiceMode=mode;localStorage.setItem(FACTORY_ALERT_SETTINGS_KEY,JSON.stringify(settings));return mode;
+}
+function v9UnlockRecordedAudio(mode=document.getElementById('alertVoiceMode')?.value||factoryAlertSettings().voiceMode){
+  if(mode!=='female'&&mode!=='male')return;if(!v8VoiceAudio){v8VoiceAudio=new Audio();v8VoiceAudio.preload='auto';}
+  const audio=v8VoiceAudio;audio.src=new URL(`voice-${mode}-broken.mp3`,location.href).href;audio.muted=true;audio.volume=0;
+  const played=audio.play();if(played?.then)played.then(()=>{audio.pause();audio.currentTime=0;audio.muted=false;audio.volume=Math.max(0,Math.min(1,Number(factoryAlertSettings().volume)||1));}).catch(()=>{audio.muted=false;});
+}
+function v9VoiceModeChanged(mode){v9PersistVoiceMode(mode);v8RefreshVoiceModeHelp();v9UnlockRecordedAudio(mode);showFactoryToast('จำเสียงที่เลือกไว้แล้ว','success');}
 function v8RefreshVoiceModeHelp(){
   const select=document.getElementById('alertVoiceMode'),deviceLabel=document.getElementById('alertVoice')?.closest('label'),help=document.getElementById('alertVoiceModeHelp');if(!select)return;
   const mode=select.value;deviceLabel?.classList.toggle('hidden',mode!=='device');
@@ -3091,7 +3103,7 @@ function v8RefreshVoiceModeHelp(){
 }
 function v8EnsureVoiceSelector(){
   const voice=document.getElementById('alertVoice'),label=voice?.closest('label');if(!label||document.getElementById('alertVoiceMode'))return;
-  label.insertAdjacentHTML('beforebegin',`<label class="text-sm font-semibold md:col-span-2">รูปแบบเสียงพูด<select id="alertVoiceMode" onchange="v8RefreshVoiceModeHelp()" class="mt-1 w-full rounded-lg border border-sky-300 bg-sky-50 p-2.5"><option value="device">${V8_VOICE_MODES.device}</option><option value="female">${V8_VOICE_MODES.female}</option><option value="male">${V8_VOICE_MODES.male}</option></select><span id="alertVoiceModeHelp" class="mt-1 block text-xs font-normal text-slate-500"></span></label>`);
+  label.insertAdjacentHTML('beforebegin',`<label class="text-sm font-semibold md:col-span-2">รูปแบบเสียงพูด<select id="alertVoiceMode" onchange="v9VoiceModeChanged(this.value)" class="mt-1 w-full rounded-lg border border-sky-300 bg-sky-50 p-2.5"><option value="device">${V8_VOICE_MODES.device}</option><option value="female">${V8_VOICE_MODES.female}</option><option value="male">${V8_VOICE_MODES.male}</option></select><span id="alertVoiceModeHelp" class="mt-1 block text-xs font-normal text-slate-500"></span></label>`);
   document.getElementById('alertVoiceMode').value=factoryAlertSettings().voiceMode||'device';
   label.querySelector('select')?.setAttribute('aria-label','เลือกเสียงไทยจากอุปกรณ์');label.firstChild.textContent='เสียงไทยในอุปกรณ์';
   const test=[...document.querySelectorAll('#factoryAlertSettings button')].find(button=>button.textContent.includes('ทดสอบเสียง'));if(test){test.onclick=v8PreviewSelectedVoice;test.textContent='ทดลองเสียงที่เลือก';}
@@ -3116,7 +3128,7 @@ speakFactoryAlert=function(text,title='SMART FACTORY'){
   if(settings.voiceMode==='female'||settings.voiceMode==='male')v8PlayRecordedVoice(settings.voiceMode,title,settings).catch(()=>v8DeviceSpeech(text,settings));else v8DeviceSpeech(text,settings);
 };
 
-document.addEventListener('pointerdown',()=>{for(const mode of['female','male'])for(const key of['broken','repairing','unaccepted','unfinished','completed','inspection','ticket']){const audio=new Audio(new URL(`voice-${mode}-${key}.mp3`,location.href).href);audio.preload='auto';}},{once:true,capture:true});
+document.addEventListener('pointerdown',()=>v9UnlockRecordedAudio(),{once:true,capture:true});
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{ensureFactoryAlertSettings();v8EnsureVoiceSelector();v7OrganizeSettings();},1900));
 </script>
 </body>
