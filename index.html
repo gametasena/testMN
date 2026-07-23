@@ -3046,6 +3046,78 @@ function v7CancelRepairForm(){document.getElementById('repairForm')?.reset();swi
 function v7EnsureRepairCancelButton(){const actions=document.querySelector('#repairForm > .flex.justify-end');if(actions&&!document.getElementById('v7RepairCancelButton'))actions.insertAdjacentHTML('afterbegin','<button id="v7RepairCancelButton" type="button" onclick="v7CancelRepairForm()" class="rounded-lg bg-slate-200 px-5 py-2 text-sm font-bold text-slate-700">ยกเลิก</button>');}
 
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v7OrderMasterData();v7SyncRepairChoices();v7OrganizeSettings();v7EnsureDashboardGear();v7EnsureTabletChoices();v7EnsureRepairCancelButton();renderTechTab();renderInspectorTab();},1700));
+
+/* ===== Selectable Thai voice packs v8 ===== */
+const V8_VOICE_MODES={device:'เสียงไทยตามโทรศัพท์/คอมพิวเตอร์ (อ่านข้อความครบ)',female:'เสียงผู้หญิง Premwadee (ไฟล์เสียงสำเร็จรูป)',male:'เสียงผู้ชาย Niwat (ไฟล์เสียงสำเร็จรูป)'};
+let v8VoiceAudio=null;
+const v8BaseFactoryAlertSettings=factoryAlertSettings;
+factoryAlertSettings=function(){return{voiceMode:'device',...v8BaseFactoryAlertSettings()};};
+
+const v8BaseSaveFactoryAlertSettings=saveFactoryAlertSettings;
+saveFactoryAlertSettings=function(){
+  v8BaseSaveFactoryAlertSettings();
+  let settings={};try{settings=JSON.parse(localStorage.getItem(FACTORY_ALERT_SETTINGS_KEY)||'{}');}catch{}
+  settings.voiceMode=document.getElementById('alertVoiceMode')?.value||'device';
+  localStorage.setItem(FACTORY_ALERT_SETTINGS_KEY,JSON.stringify(settings));
+  v8RefreshVoiceModeHelp();
+};
+
+function v8VoiceFileKey(title=''){
+  const value=String(title);
+  if(value.includes('รอตรวจสอบ'))return'inspection';
+  if(value.includes('ยังไม่รับงาน')||value.includes('ยังไม่ดำเนินการ'))return'unaccepted';
+  if(value.includes('ยังซ่อมไม่เสร็จ')||value.includes('เกินเวลา'))return'unfinished';
+  if(value.includes('เสร็จ'))return'completed';
+  if(value.includes('รับงาน')||value.includes('กำลังซ่อม'))return'repairing';
+  if(value.includes('ใบแจ้งซ่อม')||value.includes('ใบงานใหม่'))return'ticket';
+  return'broken';
+}
+function v8DeviceSpeech(text,settings=factoryAlertSettings()){
+  if(!('speechSynthesis'in window))return;
+  speechSynthesis.cancel();speechSynthesis.resume();
+  const utterance=new SpeechSynthesisUtterance(text),voice=preferredThaiVoice();
+  if(voice)utterance.voice=voice;utterance.lang=settings.language||'th-TH';utterance.volume=settings.volume;utterance.rate=settings.rate;utterance.pitch=1;speechSynthesis.speak(utterance);
+}
+function v8PlayRecordedVoice(mode,title,settings=factoryAlertSettings()){
+  if(v8VoiceAudio){try{v8VoiceAudio.pause();v8VoiceAudio.currentTime=0;}catch{}}
+  const key=v8VoiceFileKey(title),url=new URL(`voice-${mode}-${key}.mp3`,location.href).href;
+  const audio=new Audio(url);v8VoiceAudio=audio;audio.volume=Math.max(0,Math.min(1,Number(settings.volume)||1));audio.playbackRate=Math.max(.75,Math.min(1.25,Number(settings.rate)||.9));
+  return audio.play();
+}
+function v8RefreshVoiceModeHelp(){
+  const select=document.getElementById('alertVoiceMode'),deviceLabel=document.getElementById('alertVoice')?.closest('label'),help=document.getElementById('alertVoiceModeHelp');if(!select)return;
+  const mode=select.value;deviceLabel?.classList.toggle('hidden',mode!=='device');
+  if(help)help.textContent=mode==='device'?'อ่านข้อความแจ้งเตือนครบทั้งหมายเลขเครื่อง ชื่อช่าง และรายละเอียด ตามเสียงไทยที่มีในอุปกรณ์':'ใช้ไฟล์เสียงไทยชัดเจนและเปิดได้สม่ำเสมอบนมือถือ โดยอ่านข้อความแจ้งเตือนแบบย่อ ส่วนรายละเอียดครบจะแสดงบนหน้าจอและการแจ้งเตือน';
+}
+function v8EnsureVoiceSelector(){
+  const voice=document.getElementById('alertVoice'),label=voice?.closest('label');if(!label||document.getElementById('alertVoiceMode'))return;
+  label.insertAdjacentHTML('beforebegin',`<label class="text-sm font-semibold md:col-span-2">รูปแบบเสียงพูด<select id="alertVoiceMode" onchange="v8RefreshVoiceModeHelp()" class="mt-1 w-full rounded-lg border border-sky-300 bg-sky-50 p-2.5"><option value="device">${V8_VOICE_MODES.device}</option><option value="female">${V8_VOICE_MODES.female}</option><option value="male">${V8_VOICE_MODES.male}</option></select><span id="alertVoiceModeHelp" class="mt-1 block text-xs font-normal text-slate-500"></span></label>`);
+  document.getElementById('alertVoiceMode').value=factoryAlertSettings().voiceMode||'device';
+  label.querySelector('select')?.setAttribute('aria-label','เลือกเสียงไทยจากอุปกรณ์');label.firstChild.textContent='เสียงไทยในอุปกรณ์';
+  const test=[...document.querySelectorAll('#factoryAlertSettings button')].find(button=>button.textContent.includes('ทดสอบเสียง'));if(test){test.onclick=v8PreviewSelectedVoice;test.textContent='ทดลองเสียงที่เลือก';}
+  v8RefreshVoiceModeHelp();
+}
+const v8BaseEnsureFactoryAlertSettings=ensureFactoryAlertSettings;
+ensureFactoryAlertSettings=function(){v8BaseEnsureFactoryAlertSettings();v8EnsureVoiceSelector();};
+
+function v8PreviewSelectedVoice(){
+  const settings={...factoryAlertSettings(),voiceMode:document.getElementById('alertVoiceMode')?.value||factoryAlertSettings().voiceMode};
+  if(settings.voiceMode==='device')v8DeviceSpeech('ทดสอบเสียงแจ้งเตือนภาษาไทย เครื่องที่ห้าเสีย',settings);
+  else v8PlayRecordedVoice(settings.voiceMode,'แจ้งเครื่องเสีย',settings).catch(()=>v8DeviceSpeech('ทดสอบเสียงแจ้งเตือนภาษาไทย เครื่องที่ห้าเสีย',settings));
+}
+
+speakFactoryAlert=function(text,title='SMART FACTORY'){
+  const settings=factoryAlertSettings();if(!settings.enabled||!text)return;
+  const now=Date.now();let sharedLast={};try{sharedLast=JSON.parse(localStorage.getItem('smartFactoryLastSpoken_v1')||'{}')}catch{}
+  if((lastFactorySpoken.text===text&&now-lastFactorySpoken.at<15000)||(sharedLast.text===text&&now-Number(sharedLast.at)<15000))return;
+  lastFactorySpoken={text,at:now};localStorage.setItem('smartFactoryLastSpoken_v1',JSON.stringify(lastFactorySpoken));showFactoryToast(text);
+  if(settings.systemNotification&&'Notification'in window&&Notification.permission==='granted'){try{new Notification(title,{body:text,icon:'https://cdn-icons-png.flaticon.com/512/2897/2897785.png',tag:'smart-factory-'+text.slice(0,30)})}catch{}}
+  if(!settings.speech)return;
+  if(settings.voiceMode==='female'||settings.voiceMode==='male')v8PlayRecordedVoice(settings.voiceMode,title,settings).catch(()=>v8DeviceSpeech(text,settings));else v8DeviceSpeech(text,settings);
+};
+
+document.addEventListener('pointerdown',()=>{for(const mode of['female','male'])for(const key of['broken','repairing','unaccepted','unfinished','completed','inspection','ticket']){const audio=new Audio(new URL(`voice-${mode}-${key}.mp3`,location.href).href);audio.preload='auto';}},{once:true,capture:true});
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{ensureFactoryAlertSettings();v8EnsureVoiceSelector();v7OrganizeSettings();},1900));
 </script>
 </body>
 </html>
