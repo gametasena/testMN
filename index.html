@@ -87,7 +87,10 @@ animation: pulse-yellow 1s infinite;
 <i class="fa-solid fa-wrench w-5"></i><span>เริ่มงานซ่อม / ปิดงาน</span>
 </a>
 <a href="#" id="nav-ticket" onclick="switchView('ticket')" class="nav-item flex items-center space-x-3 px-4 py-3 rounded-lg hover:bg-slate-800 hover:text-white transition">
-<span>📄 ใบแจ้งซ่อม</span>
+<i class="fa-solid fa-file-circle-exclamation w-5 text-white"></i><span>ใบแจ้งซ่อม</span>
+</a>
+<a href="#" id="nav-stock" onclick="switchView('stock')" class="nav-item flex items-center space-x-3 px-4 py-3 rounded-lg hover:bg-slate-800 hover:text-white transition">
+<i class="fa-solid fa-boxes-stacked w-5 text-white"></i><span>สต็อกอะไหล่</span>
 </a>
 <a href="#" id="nav-history" onclick="switchView('history')" class="nav-item flex items-center space-x-3 px-4 py-3 rounded-lg hover:bg-slate-800 hover:text-white transition">
 <i class="fa-solid fa-clock-rotate-left w-5"></i><span>ประวัติการซ่อม</span>
@@ -1990,7 +1993,7 @@ function refreshMachineStatusIcon(machineNum){const m=(machinesState||[]).find(x
 function machineWorkflowAction(machineNum){const m=(machinesState||[]).find(x=>String(x.number)===String(machineNum));if(!m)return;const stage=m.workflowStage||(m.status==='repairing'?'repairing':'normal');if(stage==='normal'){m.workflowStage='reported';m.status='reported';m.reporterName=activeUserName();m.currentRepairStart=new Date().toISOString();saveAppState();renderDashboardCards();prepareRepairForm(m,'report');return;}if(stage==='reported'){m.workflowStage='repairing';m.status='repairing';m.technicianName=activeUserName();saveAppState();renderDashboardCards();return;}m.workflowStage='closing';m.status='repairing';m.technicianName=m.technicianName||activeUserName();saveAppState();renderDashboardCards();prepareRepairForm(m,'closing');}
 function renderDashboardCards(){const grid=document.getElementById('machineGrid');if(!grid)return;const q=(document.getElementById('searchMachineInput')?.value||'').toLowerCase(),list=(machinesState||[]).filter(m=>String(m.number).toLowerCase().includes(q)),count={normal:0,waiting:0,repairing:0};const state=m=>{const s=m.workflowStage||(m.status==='repairing'?'repairing':'normal');if(s==='reported')return{key:'waiting',color:'red',title:'แจ้งอาการแล้ว',person:`ผู้แจ้ง: ${m.reporterName||'-'}`,next:'กดครั้งที่ 2: ช่างเริ่มซ่อม'};if(s==='repairing'||s==='closing')return{key:'repairing',color:'amber',title:'ช่างกำลังแก้ไข',person:`ช่าง: ${m.technicianName||'-'}`,next:'กดครั้งที่ 3: ปิดงาน'};return{key:'normal',color:'emerald',title:'พร้อมใช้งาน',person:'',next:'กดเพื่อแจ้งอาการ'};};list.forEach(m=>count[state(m).key]++);grid.innerHTML=list.map(m=>{const x=state(m),pulse=x.color==='red'?'soft-pulse':'';return `<button data-machine-number="${esc(m.number)}" type="button" onclick="machineWorkflowAction('${esc(m.number)}')" class="relative rounded-xl border-l-4 border-${x.color}-500 bg-white p-5 text-left shadow-sm transition active:scale-[.98] hover:shadow-md"><div class="flex items-start justify-between"><div><p class="text-xs font-bold text-slate-500">เครื่องจักร</p><p class="mt-1 text-2xl font-black text-slate-900">#${esc(m.number)}</p></div><span data-machine-status-icon class="h-5 w-5 rounded-full bg-${x.color}-500 ${pulse}"></span></div><p class="mt-4 text-sm font-bold text-slate-700">${x.title}</p>${x.person?`<p class="mt-1 text-xs font-semibold text-slate-600">${esc(x.person)}</p>`:''}<p class="mt-2 text-xs text-slate-500">${x.next}</p></button>`;}).join('')||'<p class="col-span-full py-10 text-center text-slate-400">ไม่พบเครื่องจักร</p>';document.getElementById('statTotalMachines').textContent=(machinesState||[]).length;document.getElementById('statNormal').textContent=count.normal;document.getElementById('statWaiting').textContent=count.waiting;document.getElementById('statRepairing').textContent=count.repairing;}
 function stabilizeLoginScreen(){document.querySelectorAll('#loginScreen').forEach((el,i)=>{if(i>0)el.remove();});const screen=document.getElementById('loginScreen');if(screen){screen.style.animation='none';screen.style.transition='none';screen.classList.remove('animate-pulse','soft-pulse');}}
-function ensureMobileNavigation(){if(document.getElementById('mobileNavigation'))return;document.body.insertAdjacentHTML('beforeend','<nav id="mobileNavigation" class="fixed inset-x-0 bottom-0 z-40 flex justify-around border-t border-slate-200 bg-white px-1 py-2 shadow-2xl md:hidden"><button onclick="switchView(\'dashboard\')" class="flex flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-chart-pie text-base"></i>หลัก</button><button onclick="switchView(\'repair\')" class="flex flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-wrench text-base"></i>ซ่อม</button><button onclick="switchView(\'ticket\')" class="flex flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-clipboard-list text-base"></i>ใบงาน</button><button onclick="switchView(\'pm\')" class="flex flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-box-open text-base"></i>PM</button><button onclick="switchView(\'history\')" class="flex flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-clock-rotate-left text-base"></i>ประวัติ</button></nav>');}
+function ensureMobileNavigation(){if(document.getElementById('mobileNavigation'))return;document.body.insertAdjacentHTML('beforeend','<nav id="mobileNavigation" class="fixed inset-x-0 bottom-0 z-40 flex justify-start overflow-x-auto border-t border-slate-200 bg-white px-1 py-2 shadow-2xl md:hidden"><button onclick="switchView(\'dashboard\')" class="flex min-w-[58px] shrink-0 flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-chart-pie text-base"></i>หลัก</button><button onclick="switchView(\'repair\')" class="flex min-w-[58px] shrink-0 flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-wrench text-base"></i>ซ่อม</button><button onclick="switchView(\'ticket\')" class="flex min-w-[58px] shrink-0 flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-clipboard-list text-base"></i>ใบงาน</button><button id="v10MobileStockButton" onclick="switchView(\'stock\')" class="flex min-w-[58px] shrink-0 flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-boxes-stacked text-base text-amber-500"></i>สต็อก</button><button onclick="switchView(\'pm\')" class="flex min-w-[58px] shrink-0 flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-box-open text-base"></i>PM</button><button onclick="switchView(\'history\')" class="flex min-w-[58px] shrink-0 flex-col items-center gap-1 px-2 text-[10px] text-slate-700"><i class="fa-solid fa-clock-rotate-left text-base"></i>ประวัติ</button></nav>');}
 if(!document.getElementById('productionResponsiveStyle'))document.head.insertAdjacentHTML('beforeend','<style id="productionResponsiveStyle">#loginScreen{animation:none!important;transition:none!important}@media(max-width:767px){body{padding-bottom:66px}header{height:auto!important;min-height:58px;padding:10px 14px!important}header #pageTitle{font-size:15px!important}header .flex.items-center.space-x-6{gap:8px!important}#exportAllExcelButton{padding:7px!important;font-size:10px!important}main{padding:14px!important}.grid.grid-cols-2.lg\\:grid-cols-5{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important}.grid.grid-cols-1.sm\\:grid-cols-2.md\\:grid-cols-3.xl\\:grid-cols-4{grid-template-columns:1fr!important;gap:12px!important}#machineGrid button{min-height:132px}#view-ticket,#view-pm,#view-history,#view-statistics{overflow-x:hidden}#view-ticket table,#view-history table,#view-pm table{display:block;overflow-x:auto;white-space:nowrap}.max-w-4xl,.max-w-3xl{max-width:100%!important}.p-6{padding:16px!important}.fixed.inset-0{padding:12px!important}#loginScreen>div{padding:22px!important;border-radius:18px!important}#dashboardTicketAlert{display:none!important}}@media(min-width:768px) and (max-width:1024px){main{padding:18px!important}#machineGrid{grid-template-columns:repeat(3,minmax(0,1fr))!important}.w-64{width:220px!important}}</style>');
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{stabilizeLoginScreen();ensureMobileNavigation();renderDashboardCards();},700));
 /* Use explicit colors so status icons work even when the CDN style cache is unavailable. */
@@ -3231,7 +3234,7 @@ appStateSnapshot=function(){return{...v11BaseSnapshot(),repairAdvice:v11RepairAd
 const v11BaseRestore=restoreAppState;
 restoreAppState=function(saved){v11BaseRestore(saved);if(Array.isArray(saved?.repairAdvice))v11RepairAdvice=saved.repairAdvice;};
 const v11BaseProductionMerge=productionMerge;
-productionMerge=function(local,remote){const merged=v11BaseProductionMerge(local,remote);merged.repairAdvice=Array.isArray(remote?.repairAdvice)?remote.repairAdvice:(local?.repairAdvice||[]);return merged;};
+productionMerge=function(remote,local){const merged=v11BaseProductionMerge(remote,local);merged.repairAdvice=Array.isArray(local?.repairAdvice)?local.repairAdvice:(remote?.repairAdvice||[]);return merged;};
 
 function v11EnsureStyles(){if(document.getElementById('v11Styles'))return;document.head.insertAdjacentHTML('beforeend',`<style id="v11Styles">
 #nav-ticket>i,#nav-stock>i,#mobile-nav-stock i{color:#fff!important}
@@ -3318,6 +3321,126 @@ renderMasterDataView=function(){v12BaseRenderMasterData();v12OrderMasterData();}
 const v12BaseRenderDashboard=renderDashboardCards;
 renderDashboardCards=function(){v12BaseRenderDashboard();setTimeout(()=>{v11EnsureDashboardTools();v12ArrangeDashboardControls();},0);};
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v12ArrangeDashboardControls();v12OrderMasterData();},2700));
+
+/* ===== Stock category placement and reliable repeated stock entry v13 ===== */
+function v13EnsureCategoryManagerCard(){
+  v10EnsureInventoryUI();
+  const select=document.getElementById('v10CategoryManager');if(!select)return null;
+  const card=select.closest('.rounded-xl');if(!card)return null;
+  card.id='v13CategoryManagerCard';card.dataset.masterOrder='9';
+  const title=card.querySelector('h3');if(title)title.innerHTML='<i class="fa-solid fa-tags mr-2 text-amber-500"></i>9. จัดการหมวดอะไหล่';
+  return card;
+}
+function v13OrderMasterData(){
+  v12OrderMasterData();const grid=document.querySelector('#view-masterdata > .grid'),category=v13EnsureCategoryManagerCard(),parts=document.getElementById('masterPartsManager');if(!grid||!category)return;
+  grid.appendChild(category);if(parts)grid.appendChild(parts);v10RefreshCategoryOptions();
+}
+const v13BaseRenderMasterData=renderMasterDataView;
+renderMasterDataView=function(){v13BaseRenderMasterData();v13OrderMasterData();};
+
+v10SaveStockItem=async function(event){
+  event.preventDefault();
+  const form=event.currentTarget||event.target,submit=form.querySelector('button[type="submit"],button:not([type])');if(submit?.disabled)return;if(submit)submit.disabled=true;
+  try{
+    const editId=document.getElementById('v10StockEditId').value.trim(),categoryId=document.getElementById('v10StockFormCategory').value,name=document.getElementById('v10StockFormName').value.trim(),code=document.getElementById('v10StockFormCode').value.trim(),details=document.getElementById('v10StockFormDetails').value.trim(),quantity=Math.max(0,Number(document.getElementById('v10StockFormQuantity').value||0)),minimum=Math.max(0,Number(document.getElementById('v10StockFormMinimum').value||0)),file=document.getElementById('v10StockFormPhoto').files?.[0];
+    if(!name||!code)return alert('กรุณากรอกชื่อและรหัสอะไหล่');
+    const photo=file?await v10ReadStockPhoto(file):'';
+    if(editId){
+      const item=v10StockItems.find(row=>String(row.id)===editId);if(!item)return alert('ไม่พบรายการอะไหล่ที่ต้องการแก้ไข');
+      const normalizedName=name.toLocaleLowerCase('th-TH'),normalizedCode=code.toLowerCase();
+      const duplicate=v10StockItems.find(row=>String(row.id)!==editId&&String(row.code||'').trim().toLowerCase()===normalizedCode&&String(row.name||'').trim().toLocaleLowerCase('th-TH')===normalizedName);if(duplicate)return alert('มีรายการที่ชื่อและรหัสอะไหล่ตรงกันอยู่แล้ว');
+      Object.assign(item,{categoryId,name,code,details,quantity,minimum,updatedAt:new Date().toISOString()});if(photo)item.photo=photo;showFactoryToast('แก้ไขข้อมูลอะไหล่แล้ว','success');
+    }else{
+      const normalizedName=name.toLocaleLowerCase('th-TH'),normalizedCode=code.toLowerCase();
+      const existing=v10StockItems.find(row=>String(row.code||'').trim().toLowerCase()===normalizedCode&&String(row.name||'').trim().toLocaleLowerCase('th-TH')===normalizedName);
+      if(existing){existing.quantity=Number(existing.quantity||0)+quantity;existing.updatedAt=new Date().toISOString();if(photo&&!existing.photo)existing.photo=photo;showFactoryToast(`ชื่อและรหัสตรงกับรายการเดิม · เพิ่มจำนวน ${quantity} เข้ายอดเดิมแล้ว`,'success');}
+      else{v10StockItems.push({id:v10Id('stock'),categoryId,name,code,details,photo,quantity,minimum,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});showFactoryToast(`บันทึกอะไหล่ ${name} เป็นรายการใหม่แล้ว`,'success');}
+    }
+    saveAppState();v10ResetStockForm();v10SwitchStockTab('list');v10RenderStock();
+  }catch(error){console.error(error);alert(`บันทึกอะไหล่ไม่สำเร็จ: ${error.message||error}`);}
+  finally{if(submit)submit.disabled=false;}
+};
+function v13RefreshStockFormHelp(){const help=document.getElementById('v10StockFormTitle')?.parentElement?.querySelector('p');if(help)help.textContent='ระบบจะรวมจำนวนเมื่อทั้งชื่อและรหัสอะไหล่ตรงกันเท่านั้น หากชื่อแตกต่างกันจะสร้างเป็นรายการใหม่';}
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v13EnsureCategoryManagerCard();v13OrderMasterData();v13RefreshStockFormHelp();},3000));
+
+/* ===== Responsive numbered spare-part category list v14 ===== */
+function v14RenderCategoryManager(){
+  const card=v13EnsureCategoryManagerCard();if(!card)return;
+  card.className='flex min-h-[390px] flex-col rounded-xl border bg-white p-5 shadow-sm';
+  card.innerHTML=`<div class="mb-4 flex items-center justify-between gap-3 border-b pb-3"><h3 class="font-black text-slate-900"><i class="fa-solid fa-tags mr-2 text-amber-500"></i>9. จัดการหมวดอะไหล่</h3><button type="button" onclick="v14AddCategory()" class="shrink-0 rounded-lg bg-amber-500 px-3 py-2 text-xs font-black text-slate-950"><i class="fa-solid fa-plus mr-1"></i>เพิ่มหมวด</button></div><select id="v10CategoryManager" class="hidden" aria-hidden="true"></select><div id="v14CategoryRows" class="max-h-[305px] flex-1 space-y-2 overflow-y-auto pr-1"></div>`;
+  const rows=document.getElementById('v14CategoryRows');rows.innerHTML=(v10StockCategories||[]).map((category,index)=>`<div class="flex min-w-0 items-center gap-2 rounded-lg border bg-slate-50 px-3 py-2.5"><span class="shrink-0 text-sm font-black text-slate-500">${index+1}.</span><span class="min-w-0 flex-1 truncate text-sm font-bold text-slate-800" title="${esc(category.name)}">${esc(category.name)}</span><button type="button" onclick="v14EditCategory('${encodeURIComponent(category.id)}')" class="shrink-0 rounded border bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700">แก้ไข</button><button type="button" onclick="v14DeleteCategory('${encodeURIComponent(category.id)}')" title="ลบหมวด" class="shrink-0 px-1.5 py-1.5 text-red-600"><i class="fa-solid fa-trash-can"></i></button></div>`).join('')||'<p class="py-5 text-center text-sm text-slate-400">ยังไม่มีหมวดอะไหล่</p>';
+  v10RefreshCategoryOptions();if(typeof v15NumberMasterCards==='function')v15NumberMasterCards();
+}
+function v14AddCategory(){const name=prompt('ชื่อหมวดอะไหล่ใหม่:')?.trim();if(!name)return;if(v10StockCategories.some(category=>category.name.toLocaleLowerCase('th-TH')===name.toLocaleLowerCase('th-TH')))return alert('มีหมวดชื่อนี้อยู่แล้ว');v10StockCategories.push({id:v10Id('category'),name});saveAppState();v14RenderCategoryManager();v10RefreshCategoryOptions();showFactoryToast('เพิ่มหมวดอะไหล่แล้ว','success');}
+function v14EditCategory(encoded){const id=decodeURIComponent(encoded),category=v10StockCategories.find(row=>String(row.id)===id);if(!category)return;const name=prompt('แก้ไขชื่อหมวดอะไหล่:',category.name)?.trim();if(!name)return;if(v10StockCategories.some(row=>String(row.id)!==id&&row.name.toLocaleLowerCase('th-TH')===name.toLocaleLowerCase('th-TH')))return alert('มีหมวดชื่อนี้อยู่แล้ว');category.name=name;saveAppState();v14RenderCategoryManager();v10RefreshCategoryOptions();v10RenderStock();showFactoryToast('แก้ไขหมวดอะไหล่แล้ว','success');}
+async function v14DeleteCategory(encoded){const id=decodeURIComponent(encoded),category=v10StockCategories.find(row=>String(row.id)===id);if(!category)return;if(v10StockItems.some(item=>String(item.categoryId)===id))return alert('ยังมีอะไหล่อยู่ในหมวดนี้ กรุณาย้ายอะไหล่ไปหมวดอื่นก่อนลบ');if(v10StockCategories.length<=1)return alert('ต้องเหลือหมวดอะไหล่อย่างน้อย 1 หมวด');if(!(await requestedConfirm(`ลบหมวด “${category.name}” หรือไม่?`,'ลบหมวดอะไหล่','ลบ')))return;v10StockCategories=v10StockCategories.filter(row=>String(row.id)!==id);saveAppState();v14RenderCategoryManager();v10RefreshCategoryOptions();v10RenderStock();showFactoryToast('ลบหมวดอะไหล่แล้ว','success');}
+const v14BaseRenderMasterData=renderMasterDataView;
+renderMasterDataView=function(){v14BaseRenderMasterData();v13OrderMasterData();v14RenderCategoryManager();};
+function v15NumberMasterCards(){
+  const grid=document.querySelector('#view-masterdata > .grid');if(!grid)return;
+  const ids=['masterMachineList','masterTechList','masterDeptList','masterStaffList','masterInspectorList','masterProblemList','masterActionManager','v11AdviceManager','v13CategoryManagerCard'];
+  ids.forEach((id,index)=>{const card=['masterActionManager','v11AdviceManager','v13CategoryManagerCard'].includes(id)?document.getElementById(id):v7MasterCard(grid,id),title=card?.querySelector('h3');if(!card||!title)return;card.dataset.masterOrder=String(index+1);const text=title.textContent.replace(/^\s*\d+\.\s*/,'').trim();const icon=title.querySelector('i')?.outerHTML||'';title.innerHTML=`${icon}${icon?' ':''}${index+1}. ${esc(text)}`;grid.appendChild(card);});
+  const parts=document.getElementById('masterPartsManager');if(parts)grid.appendChild(parts);
+}
+const v15BaseRenderMasterData=renderMasterDataView;
+renderMasterDataView=function(){v15BaseRenderMasterData();v13OrderMasterData();v14RenderCategoryManager();v15NumberMasterCards();};
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v13OrderMasterData();v14RenderCategoryManager();v15NumberMasterCards();},3300));
+
+/* ===== Stable menu and master-data ordering v16 ===== */
+let v16OrderScheduled=false,v16OrderApplying=false;
+function v16MoveInOrder(parent,nodes){
+  if(!parent)return;
+  const wanted=nodes.filter(node=>node&&node.parentElement===parent);
+  const current=[...parent.children].filter(node=>wanted.includes(node));
+  if(current.length===wanted.length&&current.every((node,index)=>node===wanted[index]))return;
+  wanted.forEach(node=>parent.appendChild(node));
+}
+function v16MasterCard(id,grid){
+  if(['masterActionManager','v11AdviceManager','v13CategoryManagerCard'].includes(id))return document.getElementById(id);
+  return v7MasterCard(grid,id);
+}
+function v16LockMasterOrder(){
+  const grid=document.querySelector('#view-masterdata > .grid');if(!grid)return;
+  const ids=['masterMachineList','masterTechList','masterDeptList','masterStaffList','masterInspectorList','masterProblemList','masterActionManager','v11AdviceManager','v13CategoryManagerCard'];
+  const cards=ids.map(id=>v16MasterCard(id,grid)).filter(Boolean);
+  cards.forEach((card,index)=>{
+    card.classList.remove('hidden');card.dataset.masterOrder=String(index+1);card.style.order=String(index+1);
+    const title=card.querySelector('h3');if(!title)return;
+    const text=title.textContent.replace(/^\s*\d+\.\s*/,'').trim(),icon=title.querySelector('i')?.outerHTML||'';
+    title.innerHTML=`${icon}${icon?' ':''}${index+1}. ${esc(text)}`;
+  });
+  const parts=document.getElementById('masterPartsManager');
+  if(parts)parts.style.order='10';
+  v16MoveInOrder(grid,[...cards,parts].filter(Boolean));
+}
+function v16LockNavigationOrder(){
+  const desktop=document.querySelector('aside nav');
+  if(desktop)v16MoveInOrder(desktop,['dashboard','repair','ticket','stock','history','pm','statistics','qrcode','masterdata','settings'].map(id=>document.getElementById(`nav-${id}`)));
+  const mobile=document.getElementById('mobileNavigation');
+  if(mobile){
+    const findView=view=>[...mobile.children].find(node=>(node.getAttribute('onclick')||'').includes(`'${view}'`));
+    v16MoveInOrder(mobile,[findView('dashboard'),findView('repair'),findView('ticket'),document.getElementById('v10MobileStockButton'),findView('pm'),findView('history'),document.getElementById('mobileLogoutButton')]);
+  }
+}
+function v16ApplyStableOrder(){
+  if(v16OrderApplying)return;v16OrderApplying=true;
+  try{v16LockMasterOrder();v16LockNavigationOrder();}finally{v16OrderApplying=false;}
+}
+function v16ScheduleStableOrder(){
+  if(v16OrderScheduled)return;v16OrderScheduled=true;
+  requestAnimationFrame(()=>{v16OrderScheduled=false;v16ApplyStableOrder();});
+}
+const v16BaseRenderMasterData=renderMasterDataView;
+renderMasterDataView=function(){v16BaseRenderMasterData();v16ApplyStableOrder();};
+const v16BaseSyncMasterData=syncMasterDataToDOM;
+syncMasterDataToDOM=function(){v16BaseSyncMasterData();v16ApplyStableOrder();};
+window.addEventListener('DOMContentLoaded',()=>{
+  v16ApplyStableOrder();
+  const targets=[document.querySelector('#view-masterdata > .grid'),document.querySelector('aside nav'),document.getElementById('mobileNavigation')].filter(Boolean);
+  const observer=new MutationObserver(()=>v16ScheduleStableOrder());
+  targets.forEach(target=>observer.observe(target,{childList:true}));
+  window.v16StableOrderObserver=observer;
+});
 </script>
 </body>
 </html>
