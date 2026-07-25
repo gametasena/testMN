@@ -410,6 +410,8 @@ animation: pulse-yellow 1s infinite;
       <div>
         <label class="block text-xs font-semibold text-slate-600 mb-1">เรียงตามวันที่ PM ครั้งต่อไป</label>
         <select id="pmFilterSort" onchange="renderGlobalPMDashboard()" class="w-full p-2 border rounded-lg text-sm bg-slate-50 focus:outline-none">
+          <option value="latest">เปลี่ยนล่าสุดก่อน</option>
+          <option value="oldest">เปลี่ยนเก่าสุดก่อน</option>
           <option value="asc">📅 ใกล้ถึงกำหนดก่อน (เก่า-ใหม่)</option>
           <option value="desc">📅 ไกลสุดก่อน (ใหม่-เก่า)</option>
         </select>
@@ -1565,12 +1567,12 @@ function ensurePMHistoryBaseline() {
 }
 function ensureMachineHistoryPanel() {
   const container=document.getElementById('pmHistoryTab'); if(!container || document.getElementById('pmMachineHistoryPanel')) return;
-  container.insertAdjacentHTML('beforeend', `<div id="pmMachineHistoryPanel" class="overflow-hidden rounded-xl border bg-white shadow-sm"><div class="flex flex-wrap items-center justify-between gap-3 border-b p-4"><div><h3 class="font-bold text-slate-900">ประวัติ PM แยกตามเครื่องจักร</h3><p class="text-xs text-slate-500">แสดงการเปลี่ยนอะไหล่และการอัปเดต PM ทั้งหมด</p></div><select id="pmHistoryMachineSelect" onchange="renderMachinePMHistory()" class="rounded-lg border p-2 text-sm"></select></div><div class="overflow-x-auto"><table class="min-w-full text-left text-sm"><thead class="bg-slate-50"><tr><th class="p-3">วันที่ทำ</th><th class="p-3">เครื่อง</th><th class="p-3">อะไหล่</th><th class="p-3">กำหนดเดิม</th><th class="p-3">ผล PM</th><th class="p-3">ผู้ดำเนินการ</th><th class="p-3">หมายเหตุ</th></tr></thead><tbody id="pmMachineHistoryRows"></tbody></table></div></div>`);
+  container.insertAdjacentHTML('beforeend', `<div id="pmMachineHistoryPanel" class="overflow-hidden rounded-xl border bg-white shadow-sm"><div class="flex flex-wrap items-center justify-between gap-3 border-b p-4"><div><h3 class="font-bold text-slate-900">ประวัติ PM แยกตามเครื่องจักร</h3><p class="text-xs text-slate-500">แสดงการเปลี่ยนอะไหล่และการอัปเดต PM ทั้งหมด</p></div><div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row"><select id="pmHistoryOrder" onchange="renderMachinePMHistory()" class="rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm font-bold"><option value="latest">ล่าสุดก่อน</option><option value="oldest">เก่าสุดก่อน</option></select><select id="pmHistoryMachineSelect" onchange="renderMachinePMHistory()" class="rounded-lg border p-2 text-sm"></select></div></div><div class="overflow-x-auto"><table class="min-w-full text-left text-sm"><thead class="bg-slate-50"><tr><th class="p-3">วันที่ทำ</th><th class="p-3">เครื่อง</th><th class="p-3">อะไหล่</th><th class="p-3">กำหนดเดิม</th><th class="p-3">ผล PM</th><th class="p-3">ผู้ดำเนินการ</th><th class="p-3">หมายเหตุ</th></tr></thead><tbody id="pmMachineHistoryRows"></tbody></table></div></div>`);
 }
 function renderMachinePMHistory() {
   ensurePMHistoryBaseline(); ensureMachineHistoryPanel(); const select=document.getElementById('pmHistoryMachineSelect'); const rowsEl=document.getElementById('pmMachineHistoryRows'); if(!select || !rowsEl)return;
   const selected=select.value; select.innerHTML=`<option value="">ทุกเครื่องจักร</option>`+(machinesState||[]).map(m=>`<option value="${esc(m.number)}">เครื่อง #${esc(m.number)}</option>`).join(''); if(selected)select.value=selected;
-  const current=select.value; const rows=(pmHistoryLog||[]).filter(h=>!current || String(h.machine)===String(current)).sort((a,b)=>String(b.actualDate).localeCompare(String(a.actualDate)));
+  const current=select.value,order=document.getElementById('pmHistoryOrder')?.value||'latest'; const rows=(pmHistoryLog||[]).filter(h=>!current || String(h.machine)===String(current)).sort((a,b)=>order==='oldest'?String(a.actualDate||a.completedAt||'').localeCompare(String(b.actualDate||b.completedAt||'')):String(b.actualDate||b.completedAt||'').localeCompare(String(a.actualDate||a.completedAt||'')));
   const labels={early:'ก่อนกำหนด',late:'ล่าช้า','on-time':'ตรงกำหนด',recorded:'ข้อมูลเดิม'};
   rowsEl.innerHTML=rows.map(h=>`<tr class="border-t"><td class="p-3">${esc(h.actualDate||'-')}</td><td class="p-3 font-bold">#${esc(h.machine)}</td><td class="p-3">${esc(h.partName)}</td><td class="p-3">${esc(h.plannedDate||'-')}</td><td class="p-3">${esc(labels[h.status]||h.status||'-')}${typeof h.differenceDays==='number'?` (${h.differenceDays>0?'ล่าช้า ':h.differenceDays<0?'ก่อน ':' '} ${Math.abs(h.differenceDays)} วัน)`:''}</td><td class="p-3">${esc(h.operator||'-')}</td><td class="p-3">${esc(h.remarks||'-')}</td></tr>`).join('')||'<tr><td colspan="7" class="p-5 text-center text-slate-400">ยังไม่มีประวัติสำหรับเครื่องนี้</td></tr>';
 }
@@ -2895,8 +2897,8 @@ function v6EnsurePhotoViewer(){if(!document.getElementById('v6PhotoViewer'))docu
 function v6ShowPartPhoto(id,source='log'){const list=source==='master'?Object.values(machineMasterPartsState||{}).flat():sparePartsLog||[],part=list.find(item=>String(item.id)===String(id));if(!part?.photo)return alert('รายการนี้ยังไม่มีรูปภาพ');v6EnsurePhotoViewer();document.getElementById('v6PhotoViewerImage').src=part.photo;document.getElementById('v6PhotoViewer').classList.replace('hidden','flex');}
 function v6CompactImage(file){return new Promise((resolve,reject)=>{if(!file)return resolve('');if(file.size>12*1024*1024)return reject(new Error('รูปภาพต้องมีขนาดไม่เกิน 12 MB'));const reader=new FileReader();reader.onerror=()=>reject(new Error('อ่านรูปภาพไม่สำเร็จ'));reader.onload=()=>{const image=new Image();image.onerror=()=>reject(new Error('ไฟล์รูปภาพไม่ถูกต้อง'));image.onload=()=>{const max=1200,scale=Math.min(1,max/Math.max(image.width,image.height)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(image.width*scale));canvas.height=Math.max(1,Math.round(image.height*scale));canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/jpeg',.74));};image.src=reader.result;};reader.readAsDataURL(file);});}
 function v6EnsurePartPhotoInputs(){
-  const pmForm=document.getElementById('pmEntryForm'),pmSubmit=pmForm?.querySelector('button[type="submit"]')||pmForm?.querySelector('button:last-of-type');if(pmForm&&pmSubmit&&!document.getElementById('pmEntryPhoto'))pmSubmit.insertAdjacentHTML('beforebegin','<label class="text-xs font-semibold">รูปอะไหล่<input id="pmEntryPhoto" type="file" accept="image/*" capture="environment" class="mt-1 w-full rounded border p-2 text-sm"><span id="pmEntryPhotoStatus" class="mt-1 block text-xs font-normal text-slate-500"></span></label>');
-  const masterForm=document.getElementById('masterPartForm'),masterSubmit=masterForm?.querySelector('button[type="submit"]')||masterForm?.querySelector('button:last-of-type');if(masterForm&&masterSubmit&&!document.getElementById('mpPhoto'))masterSubmit.insertAdjacentHTML('beforebegin','<label class="text-xs font-semibold">รูปอะไหล่<input id="mpPhoto" type="file" accept="image/*" capture="environment" class="mt-1 w-full rounded border p-2 text-sm"></label>');
+  const pmForm=document.getElementById('pmEntryForm'),pmActions=pmForm?.querySelector('.border-t');if(pmForm&&!document.getElementById('pmEntryPhoto'))(pmActions||pmForm).insertAdjacentHTML('beforebegin','<label class="text-xs font-semibold md:col-span-2 lg:col-span-3">รูปอะไหล่ <span class="font-normal text-slate-500">(เลือกจากคลังรูปหรือถ่ายภาพ)</span><input id="pmEntryPhoto" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*" class="mt-1 block w-full cursor-pointer rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm"><span id="pmEntryPhotoStatus" class="mt-1 block text-xs font-normal text-slate-500">แตะช่องด้านบนเพื่อเลือกรูปภาพ</span></label>');
+  const masterForm=document.getElementById('masterPartForm'),masterActions=masterForm?.querySelector('.border-t');if(masterForm&&!document.getElementById('mpPhoto'))(masterActions||masterForm).insertAdjacentHTML('beforebegin','<label class="text-xs font-semibold md:col-span-2">รูปอะไหล่ <span class="font-normal text-slate-500">(เลือกจากคลังรูปหรือถ่ายภาพ)</span><input id="mpPhoto" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*" class="mt-1 block w-full cursor-pointer rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm"></label>');
 }
 function v6SyncMachineInputs(){
   const options=(machinesState||[]).map(machine=>`<option value="${esc(machine.number)}">${esc(v6MachineLabel(machine))} (${esc(machine.group||'อื่นๆ')})</option>`).join('');['pmEntryMachine','pmFormMachine','repairMachineSelect','mpMachine'].forEach(id=>{const select=document.getElementById(id);if(!select)return;const current=select.value;select.innerHTML=options;if([...select.options].some(option=>option.value===current))select.value=current;});requestedEnsureMobileTicketSelectors?.();
@@ -3441,6 +3443,37 @@ window.addEventListener('DOMContentLoaded',()=>{
   targets.forEach(target=>observer.observe(target,{childList:true}));
   window.v16StableOrderObserver=observer;
 });
+
+/* ===== iPad photo picker and PM history sorting v17 ===== */
+const v18BaseSetupUnifiedFilters=setupUnifiedFilters;
+setupUnifiedFilters=function(){
+  v18BaseSetupUnifiedFilters();
+  const filters=document.getElementById('pmFilters');if(!filters||document.getElementById('pfSort'))return;
+  const sort=document.createElement('select');sort.id='pfSort';sort.className='p-2 border border-amber-300 bg-amber-50 rounded-lg text-sm font-bold';sort.innerHTML='<option value="latest">เรียง: เปลี่ยนล่าสุดก่อน</option><option value="oldest">เรียง: เปลี่ยนเก่าสุดก่อน</option><option value="asc">เรียง: PM ใกล้ถึงก่อน</option><option value="desc">เรียง: PM ไกลสุดก่อน</option>';sort.onchange=renderGlobalPMDashboard;
+  const status=document.getElementById('pfStatus');status?.insertAdjacentElement('afterend',sort);
+};
+const v17BaseEnsurePartPhotoInputs=v6EnsurePartPhotoInputs;
+v6EnsurePartPhotoInputs=function(){
+  v17BaseEnsurePartPhotoInputs();
+  [['pmEntryPhoto','pmEntryPhotoStatus'],['mpPhoto','']].forEach(([inputId,statusId])=>{
+    const input=document.getElementById(inputId);if(!input)return;
+    input.removeAttribute('capture');
+    input.setAttribute('accept','image/jpeg,image/png,image/webp,image/heic,image/heif,image/*');
+    input.onchange=()=>{const file=input.files?.[0],status=statusId&&document.getElementById(statusId);if(status)status.textContent=file?`เลือกรูปแล้ว: ${file.name}`:'ยังไม่ได้เลือกรูปภาพ';};
+  });
+};
+function v17PMRowKey(part){return `${String(part.machine||'').replace(/^#/,'').trim()}|${String(part.partName||'').trim()}|${String((part.partCodes?.length?part.partCodes:[part.partCode]).filter(Boolean).join(', ')||'-').trim()}`;}
+const v17BaseRenderGlobalPMDashboard=renderGlobalPMDashboard;
+renderGlobalPMDashboard=function(){
+  v17BaseRenderGlobalPMDashboard();
+  const order=document.getElementById('pfSort')?.value||document.getElementById('pmFilterSort')?.value||'latest',body=document.getElementById('tblGlobalPMBody');if(!body)return;
+  const data=new Map(pmRowsWithConfiguredAlert().map(part=>[v17PMRowKey(part),part]));
+  const rows=[...body.querySelectorAll('tr')].filter(row=>row.cells.length>=8);
+  const item=row=>data.get(`${String(row.cells[0]?.textContent||'').replace(/^#/,'').trim()}|${String(row.cells[1]?.textContent||'').trim()}|${String(row.cells[3]?.textContent||'').trim()}`)||{};
+  rows.sort((left,right)=>{const a=item(left),b=item(right);if(order==='latest')return String(b.lastDate||'').localeCompare(String(a.lastDate||''));if(order==='oldest')return String(a.lastDate||'').localeCompare(String(b.lastDate||''));if(order==='desc')return Number(b.days||0)-Number(a.days||0);return Number(a.days||0)-Number(b.days||0);}).forEach(row=>body.appendChild(row));
+};
+window.addEventListener('DOMContentLoaded',()=>{v6EnsurePartPhotoInputs();renderGlobalPMDashboard();});
+
 </script>
 </body>
 </html>
