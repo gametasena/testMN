@@ -896,11 +896,11 @@ function initClock() { setInterval(() => { const now = new Date(); document.getE
 
 function initDataStructure() {
 if (restoreAppState(loadAppState())) return;
-machinesState = DEFAULT_MACHINES.map((num, idx) => {
+machinesState = DEFAULT_MACHINES.map((num) => {
   let grp = 'อื่นๆ';
   if (["8", "18", "31", "34", "35", "36", "37"].includes(num)) grp = 'Sanko';
   else if (["5", "15", "13", "39", "24", "25", "33"].includes(num)) grp = 'มุ่งมั่น';
-  return { id: `m_${num}`, number: num, status: idx === 2 ? 'repairing' : 'normal', currentRepairStart: idx === 2 ? new Date(Date.now() - 20 * 60000).toISOString() : null, totalRepairs: idx === 2 ? 1 : Math.floor(Math.random() * 3), group: grp };
+  return { id: `m_${num}`, number: num, status: 'normal', workflowStage: 'normal', currentRepairStart: null, totalRepairs: 0, group: grp };
 });
 }
 
@@ -3509,6 +3509,77 @@ function v20PlaceRepairHistorySort(){
 const v20BaseRenderHistoryTable=renderHistoryTable;
 renderHistoryTable=function(){v20BaseRenderHistoryTable();v20PlaceRepairHistorySort();};
 window.addEventListener('DOMContentLoaded',()=>setTimeout(v20PlaceRepairHistorySort,1200));
+
+/* ===== Safe central bootstrap and removal of the legacy machine #13 demo state v21 ===== */
+let v21CentralHydrated=false,v21CentralSavePending=false,v21CentralRetryTimer=null;
+function v21RepairLegacyDemoMachine13(snapshot){
+  const machines=snapshot?.machinesState;if(!Array.isArray(machines))return false;
+  const machine=machines.find(item=>String(item?.number)==='13');if(!machine)return false;
+  const isLegacyDemo=machine.status==='repairing'&&!machine.workflowStage&&!machine.reporterName&&!machine.technicianName&&!machine.alertProblem&&!machine.relatedTicketId;
+  if(!isLegacyDemo)return false;
+  machine.status='normal';machine.workflowStage='normal';machine.currentRepairStart=null;machine.totalRepairs=0;
+  return true;
+}
+const v21BaseRestoreAppState=restoreAppState;
+restoreAppState=function(saved){if(saved)v21RepairLegacyDemoMachine13(saved);return v21BaseRestoreAppState(saved);};
+const v21BasePersistProductionSnapshot=persistProductionSnapshot;
+persistProductionSnapshot=async function(snapshot,retry=true){
+  clearTimeout(v21CentralRetryTimer);
+  try{
+    await v21BasePersistProductionSnapshot(snapshot,retry);
+  }catch(error){
+    v21CentralSavePending=true;
+    v21CentralRetryTimer=setTimeout(()=>{if(v21CentralHydrated&&!productionSaving)persistProductionSnapshot(productionSnapshot());},5000);
+    throw error;
+  }
+};
+queueRemoteSave=function(){
+  if(!productionToken()||productionApplying)return;
+  if(!v21CentralHydrated){v21CentralSavePending=true;return;}
+  clearTimeout(productionSaveTimer);
+  productionSaveTimer=setTimeout(()=>persistProductionSnapshot(productionSnapshot()),450);
+};
+startRealtimeSync=async function(){
+  if(!productionToken()||remoteSyncState==='connecting')return;
+  remoteSyncState='connecting';
+  const client=sharedDbClient(),token=productionToken();
+  const {data,error}=await client.rpc('get_factory_bootstrap',{p_token:token});
+  if(error){
+    remoteSyncState='disabled';v21CentralHydrated=false;
+    showFactoryToast?.(`เชื่อมต่อข้อมูลส่วนกลางไม่สำเร็จ: ${error.message||error}`,'error');
+    return;
+  }
+  const cleaned=v21RepairLegacyDemoMachine13(data);
+  applyProductionSnapshot(data);
+  v21CentralHydrated=true;v21CentralSavePending=false;remoteSyncState='ready';
+  clearInterval(productionPollTimer);
+  productionPollTimer=setInterval(()=>{if(!productionSaving)loadProductionSnapshot(true);},4000);
+  startFactoryAlertRealtime?.();
+  if(cleaned)setTimeout(()=>persistProductionSnapshot(productionSnapshot()),100);
+};
+
+/* ===== Ticket tab highlight follows the visible tab v22 ===== */
+const v22BaseSwitchTicketTab=switchTicketTab;
+switchTicketTab=function(tabId){
+  v22BaseSwitchTicketTab(tabId);
+  const tabs=['tab-form','tab-tech','tab-inspector','tab-history'];
+  tabs.forEach(id=>{
+    const button=document.getElementById(`btn-${id}`),active=id===tabId;
+    if(!button)return;
+    button.classList.toggle('bg-amber-500',active);
+    button.classList.toggle('text-slate-950',active);
+    button.classList.toggle('font-bold',active);
+    button.classList.toggle('shadow-sm',active);
+    button.classList.toggle('text-slate-600',!active);
+    button.classList.toggle('font-semibold',!active);
+    button.classList.toggle('hover:bg-slate-50',!active);
+    button.setAttribute('aria-selected',active?'true':'false');
+  });
+};
+window.addEventListener('DOMContentLoaded',()=>{
+  const visible=['tab-form','tab-tech','tab-inspector','tab-history'].find(id=>!document.getElementById(`ticket-${id}`)?.classList.contains('hidden'))||'tab-form';
+  switchTicketTab(visible);
+});
 
 </script>
 </body>
