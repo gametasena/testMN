@@ -3581,6 +3581,210 @@ window.addEventListener('DOMContentLoaded',()=>{
   switchTicketTab(visible);
 });
 
+/* ===== Reliable cross-device sync, pending remote apply and online status v23 ===== */
+let v23PendingRemoteSnapshot=null,v23BaseSnapshot=null,v23PollBusy=false,v23RetryTimer=null,v23LastError='';
+function v23Clone(value){try{return structuredClone(value);}catch{return JSON.parse(JSON.stringify(value));}}
+function v23Editing(){
+  const active=document.activeElement;
+  if(document.getElementById('pmActualUpdateModal')?.classList.contains('flex'))return true;
+  return !!(active&&/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)&&!active.readOnly&&!active.disabled);
+}
+function v23SyncIndicator(state,message=''){
+  let indicator=document.getElementById('centralSyncIndicator');
+  if(!indicator){
+    const clock=document.getElementById('liveClock')?.parentElement;
+    if(!clock)return;
+    indicator=document.createElement('span');indicator.id='centralSyncIndicator';
+    indicator.className='hidden sm:inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-black';
+    clock.insertAdjacentElement('beforebegin',indicator);
+  }
+  const online=state==='online',syncing=state==='syncing';
+  indicator.className=`hidden sm:inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-black ${online?'bg-emerald-100 text-emerald-800':syncing?'bg-amber-100 text-amber-800':'bg-red-100 text-red-800'}`;
+  indicator.textContent=online?`● ส่วนกลางออนไลน์ ${new Date().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`:syncing?'● กำลังซิงก์ส่วนกลาง':`● ส่วนกลางออฟไลน์${message?' · '+message:''}`;
+}
+function v23MachineMerge(remoteRows,localRows,baseRows){
+  const key=row=>String(row?.number??row?.id??''),remote=new Map((remoteRows||[]).map(row=>[key(row),row])),local=new Map((localRows||[]).map(row=>[key(row),row])),base=new Map((baseRows||[]).map(row=>[key(row),row])),result=[];
+  new Set([...remote.keys(),...local.keys()]).forEach(id=>{
+    const r=remote.get(id),l=local.get(id),b=base.get(id),changed=value=>JSON.stringify(value??null)!==JSON.stringify(b??null),localChanged=changed(l),remoteChanged=changed(r);
+    if(localChanged&&!remoteChanged)result.push(l);else if(remoteChanged&&!localChanged)result.push(r);else if(localChanged&&remoteChanged)result.push(l?._updatedAt&&r?._updatedAt&&String(r._updatedAt)>String(l._updatedAt)?r:l);else result.push(r||l);
+  });
+  return result.filter(Boolean);
+}
+function v23MergeSnapshot(remote,local){
+  const merged=productionMerge(remote,local);
+  merged.machinesState=v23MachineMerge(remote?.machinesState,local?.machinesState,v23BaseSnapshot?.machinesState);
+  return merged;
+}
+persistProductionSnapshot=async function(snapshot,retry=true){
+  const token=productionToken(),client=sharedDbClient();if(!token||!client||productionSaving||productionApplying)return;
+  productionSaving=true;v23SyncIndicator('syncing');clearTimeout(v23RetryTimer);
+  try{
+    const {data,error}=await client.rpc('save_factory_snapshot',{p_token:token,p_data:snapshot,p_expected_revision:productionRevision});if(error)throw error;
+    if(data?.conflict&&retry){
+      const remote=data.data||{},merged=v23MergeSnapshot(remote,snapshot);productionRevision=Number(remote._revision||0);v23BaseSnapshot=v23Clone(remote);productionSaving=false;return persistProductionSnapshot(merged,false);
+    }
+    if(data?.conflict){applyProductionSnapshot(data.data);v23BaseSnapshot=v23Clone(data.data);return;}
+    const saved=data?.data;
+    if(saved){productionRevision=Number(saved._revision||productionRevision);v23BaseSnapshot=v23Clone(saved);localStorage.setItem(APP_STORAGE_KEY,JSON.stringify(saved));}
+    v23LastError='';v23SyncIndicator('online');
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');v23LastError=message;remoteSyncState='disabled';v23SyncIndicator('offline',message);
+    if(!message.includes('เซสชัน')){clearTimeout(v23RetryTimer);v23RetryTimer=setTimeout(()=>{if(productionToken())persistProductionSnapshot(productionSnapshot());},5000);}
+    showFactoryToast?.(`บันทึกส่วนกลางไม่สำเร็จ: ${message}`,'error');
+  }finally{productionSaving=false;}
+};
+loadProductionSnapshot=async function(silent=false){
+  if(v23PollBusy)return;
+  const token=productionToken(),client=sharedDbClient();if(!token||!client)return;
+  v23PollBusy=true;
+  try{
+    const {data,error}=await client.rpc('get_factory_bootstrap',{p_token:token});if(error)throw error;
+    if(Number(data?._revision||0)!==productionRevision){
+      if(v23Editing())v23PendingRemoteSnapshot=data;
+      else{applyProductionSnapshot(data);v23BaseSnapshot=v23Clone(data);v23PendingRemoteSnapshot=null;}
+    }
+    remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');remoteSyncState='disabled';v23LastError=message;v23SyncIndicator('offline',message);
+    if(!silent)showFactoryToast?.(`โหลดข้อมูลส่วนกลางไม่สำเร็จ: ${message}`,'error');
+  }finally{v23PollBusy=false;}
+};
+startRealtimeSync=async function(){
+  if(!productionToken()||remoteSyncState==='connecting')return;
+  remoteSyncState='connecting';v23SyncIndicator('syncing');
+  const client=sharedDbClient(),token=productionToken();
+  const {data,error}=await client.rpc('get_factory_bootstrap',{p_token:token});
+  if(error){remoteSyncState='disabled';v21CentralHydrated=false;v23SyncIndicator('offline',String(error.message||error));showFactoryToast?.(`เชื่อมต่อข้อมูลส่วนกลางไม่สำเร็จ: ${error.message||error}`,'error');return;}
+  const cleaned=v21RepairLegacyDemoMachine13(data);applyProductionSnapshot(data);v23BaseSnapshot=v23Clone(data);
+  v21CentralHydrated=true;v21CentralSavePending=false;remoteSyncState='ready';v23SyncIndicator('online');
+  clearInterval(productionPollTimer);productionPollTimer=setInterval(()=>{if(!productionSaving)loadProductionSnapshot(true);},1500);
+  startFactoryAlertRealtime?.();if(cleaned)setTimeout(()=>persistProductionSnapshot(productionSnapshot()),100);
+};
+document.addEventListener('focusout',()=>setTimeout(()=>{
+  if(v23PendingRemoteSnapshot&&!v23Editing()){const data=v23PendingRemoteSnapshot;v23PendingRemoteSnapshot=null;applyProductionSnapshot(data);v23BaseSnapshot=v23Clone(data);v23SyncIndicator('online');}
+},180));
+window.addEventListener('focus',()=>{if(v21CentralHydrated)loadProductionSnapshot(true);});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&v21CentralHydrated)loadProductionSnapshot(true);});
+
+/* ===== PK1 / PK2 / PK3 isolated workspaces v24 ===== */
+const FACTORY_SITE_SESSION_KEY='smartFactorySelectedSite_v1',FACTORY_SITE_LAST_KEY='smartFactoryLastSite_v1';
+const FACTORY_SITES=['pk1','pk2','pk3'];
+const v24BuiltInSnapshot=v23Clone(appStateSnapshot());
+function factorySite(){
+  const query=new URLSearchParams(location.search).get('site')?.toLowerCase(),session=sessionStorage.getItem(FACTORY_SITE_SESSION_KEY),last=localStorage.getItem(FACTORY_SITE_LAST_KEY),site=[query,session,last,'pk3'].find(value=>FACTORY_SITES.includes(value));
+  if(query&&FACTORY_SITES.includes(query))v24SetFactorySite(query);
+  return site||'pk3';
+}
+function v24SetFactorySite(site){
+  const value=FACTORY_SITES.includes(String(site).toLowerCase())?String(site).toLowerCase():'pk3';
+  sessionStorage.setItem(FACTORY_SITE_SESSION_KEY,value);localStorage.setItem(FACTORY_SITE_LAST_KEY,value);return value;
+}
+function v24SiteStorageKey(site=factorySite()){return `${APP_STORAGE_KEY}_${site}`;}
+function v24FreshSiteSnapshot(){
+  const snapshot=v23Clone(v24BuiltInSnapshot);
+  snapshot.machinesState=(snapshot.machinesState||[]).map(machine=>({...machine,status:'normal',workflowStage:'normal',currentRepairStart:null,totalRepairs:0}));
+  snapshot.ticketsState=[];snapshot.historyDataLog=[];snapshot.sparePartsLog=[];snapshot.machineMasterPartsState={};snapshot.pmHistoryLog=[];snapshot.factoryAlertEvents=[];snapshot._ticketActivityLog=[];
+  snapshot.stockItems=[];snapshot.stockWithdrawals=[];snapshot.ticketSequence=0;delete snapshot._revision;delete snapshot._syncOrigin;
+  return snapshot;
+}
+loadAppState=function(){try{const saved=localStorage.getItem(v24SiteStorageKey());return saved?JSON.parse(saved):null;}catch(error){console.warn('Unable to restore site data',error);return null;}};
+saveAppState=function(){const state=productionSnapshot();try{localStorage.setItem(v24SiteStorageKey(),JSON.stringify(state));}catch(error){console.warn('Unable to save site data',error);}queueRemoteSave();};
+const v24BaseApplyProductionSnapshot=applyProductionSnapshot;
+applyProductionSnapshot=function(data){v24BaseApplyProductionSnapshot(data);try{localStorage.setItem(v24SiteStorageKey(),JSON.stringify(data));}catch{}};
+
+function v24UpdateSiteChrome(){
+  const site=factorySite().toUpperCase();let badge=document.getElementById('factorySiteBadge');
+  if(!badge){const user=document.getElementById('userName');if(user){badge=document.createElement('span');badge.id='factorySiteBadge';badge.className='ml-2 rounded-full bg-amber-500 px-2.5 py-1 text-xs font-black text-slate-950';user.parentElement?.appendChild(badge);}}
+  if(badge)badge.textContent=site;
+  document.documentElement.dataset.factorySite=factorySite();
+}
+const v24BaseRenderLocalAuth=renderLocalAuth;
+renderLocalAuth=function(message='',kind='error'){
+  v24BaseRenderLocalAuth(message,kind);
+  const form=document.getElementById('localAuthForm');if(!form||document.getElementById('factorySiteSelect'))return;
+  const selected=factorySite();
+  form.insertAdjacentHTML('afterbegin',`<fieldset class="rounded-xl border border-amber-200 bg-amber-50 p-3"><legend class="px-1 text-sm font-black text-slate-800">เลือกพื้นที่ใช้งาน</legend><div class="grid grid-cols-3 gap-2">${FACTORY_SITES.map(site=>`<label class="cursor-pointer"><input class="peer sr-only" type="radio" name="factorySite" value="${site}" ${site===selected?'checked':''}><span class="flex min-h-12 items-center justify-center rounded-lg border bg-white text-sm font-black uppercase text-slate-600 transition peer-checked:border-amber-500 peer-checked:bg-amber-500 peer-checked:text-slate-950 peer-checked:shadow">${site.toUpperCase()}</span></label>`).join('')}</div><select id="factorySiteSelect" class="sr-only" aria-label="พื้นที่ใช้งาน"><option value="pk1">PK1</option><option value="pk2">PK2</option><option value="pk3">PK3</option></select><p class="mt-2 text-center text-xs text-amber-800">ข้อมูลเครื่องจักร ใบงาน PM และสต็อกจะแยกจากพื้นที่อื่น</p></fieldset>`);
+  const hidden=document.getElementById('factorySiteSelect');hidden.value=selected;
+  form.querySelectorAll('input[name="factorySite"]').forEach(input=>input.addEventListener('change',()=>{hidden.value=input.value;v24SetFactorySite(input.value);}));
+};
+const v24BaseSubmitUnifiedLocalAuth=submitUnifiedLocalAuth;
+submitUnifiedLocalAuth=async function(event){
+  const selected=document.getElementById('factorySiteSelect')?.value||document.querySelector('input[name="factorySite"]:checked')?.value||factorySite(),previous=factorySite();v24SetFactorySite(selected);
+  if(selected!==previous){clearInterval(productionPollTimer);remoteSyncState='disabled';v21CentralHydrated=false;v23BaseSnapshot=null;v23PendingRemoteSnapshot=null;productionRevision=0;}
+  return v24BaseSubmitUnifiedLocalAuth(event);
+};
+const v24BaseFinishProductionLogin=finishProductionLogin;
+finishProductionLogin=async function(user,token){await v24BaseFinishProductionLogin(user,token);v24UpdateSiteChrome();};
+
+persistProductionSnapshot=async function(snapshot,retry=true){
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client||productionSaving||productionApplying)return;
+  productionSaving=true;v23SyncIndicator('syncing');clearTimeout(v23RetryTimer);
+  try{
+    const {data,error}=await client.rpc('save_factory_snapshot_site',{p_token:token,p_site:site,p_data:snapshot,p_expected_revision:productionRevision});if(error)throw error;
+    if(data?.conflict&&retry){const remote=data.data||{},merged=v23MergeSnapshot(remote,snapshot);productionRevision=Number(remote._revision||0);v23BaseSnapshot=v23Clone(remote);productionSaving=false;return persistProductionSnapshot(merged,false);}
+    if(data?.conflict){applyProductionSnapshot(data.data);v23BaseSnapshot=v23Clone(data.data);return;}
+    const saved=data?.data;if(saved){productionRevision=Number(saved._revision||productionRevision);v23BaseSnapshot=v23Clone(saved);localStorage.setItem(v24SiteStorageKey(site),JSON.stringify(saved));}
+    v23LastError='';remoteSyncState='ready';v23SyncIndicator('online');
+  }catch(error){const message=String(error?.message||error||'เชื่อมต่อไม่ได้');v23LastError=message;remoteSyncState='disabled';v23SyncIndicator('offline',message);if(!message.includes('เซสชัน'))v23RetryTimer=setTimeout(()=>{if(productionToken())persistProductionSnapshot(productionSnapshot());},5000);showFactoryToast?.(`บันทึก ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');}
+  finally{productionSaving=false;}
+};
+loadProductionSnapshot=async function(silent=false){
+  if(v23PollBusy)return;const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;v23PollBusy=true;
+  try{
+    const {data,error}=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(error)throw error;
+    if(Number(data?._revision||0)!==productionRevision){if(v23Editing())v23PendingRemoteSnapshot=data;else{applyProductionSnapshot(data);v23BaseSnapshot=v23Clone(data);v23PendingRemoteSnapshot=null;}}
+    remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  }catch(error){const message=String(error?.message||error||'เชื่อมต่อไม่ได้');remoteSyncState='disabled';v23LastError=message;v23SyncIndicator('offline',message);if(!silent)showFactoryToast?.(`โหลด ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');}
+  finally{v23PollBusy=false;}
+};
+startRealtimeSync=async function(){
+  if(!productionToken()||remoteSyncState==='connecting')return;
+  const site=factorySite(),client=sharedDbClient(),token=productionToken();remoteSyncState='connecting';v23SyncIndicator('syncing');productionRevision=0;
+  const {data,error}=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});
+  if(error){remoteSyncState='disabled';v21CentralHydrated=false;v23SyncIndicator('offline',String(error.message||error));showFactoryToast?.(`เชื่อมต่อ ${site.toUpperCase()} ไม่สำเร็จ: ${error.message||error}`,'error');return;}
+  let snapshot=data,seed=false;if(!Array.isArray(snapshot?.machinesState)){snapshot={...v24FreshSiteSnapshot(),_revision:Number(data?._revision||0),_site:site};seed=true;}
+  v21RepairLegacyDemoMachine13(snapshot);applyProductionSnapshot(snapshot);v23BaseSnapshot=v23Clone(snapshot);productionRevision=Number(snapshot._revision||0);
+  v21CentralHydrated=true;v21CentralSavePending=false;remoteSyncState='ready';v23SyncIndicator('online');v24UpdateSiteChrome();
+  clearInterval(productionPollTimer);productionPollTimer=setInterval(()=>{if(!productionSaving)loadProductionSnapshot(true);},1500);startFactoryAlertRealtime?.();if(seed)setTimeout(()=>persistProductionSnapshot(productionSnapshot()),120);
+};
+
+machineTicketUrl=function(number){const url=new URL(location.href.split('#')[0]);url.searchParams.set('site',factorySite());url.hash=`report-machine=${encodeURIComponent(number)}`;return url.toString();};
+v6QrMachineRead=async function(machineNumber){try{const {data,error}=await sharedDbClient().rpc('qr_get_factory_machine_site',{p_site:factorySite(),p_machine:String(machineNumber)});if(error)throw error;if(data){const index=(machinesState||[]).findIndex(machine=>String(machine.number)===String(machineNumber));if(index>=0)machinesState[index]={...machinesState[index],...data};else machinesState.push(data);}}catch(error){console.warn('QR machine read unavailable',error.message||error);}};
+v6QrMachineUpdate=async function(action,machine,payload={}){if(!v6QrGuestMachine)return;try{const {data,error}=await sharedDbClient().rpc('qr_update_factory_machine_site',{p_site:factorySite(),p_machine:String(machine.number),p_action:action,p_payload:{...payload,reporter:'ผู้ใช้ QR',technician:'ผู้ใช้ QR'}});if(error)throw error;if(data)Object.assign(machine,data);}catch(error){showFactoryToast?.(`ส่งข้อมูล QR ${factorySite().toUpperCase()} ไม่สำเร็จ: ${error.message||error}`,'error');}};
+window.addEventListener('DOMContentLoaded',()=>{factorySite();v24UpdateSiteChrome();});
+
+/* ===== Visible logout and admin-only PK switcher v25 ===== */
+function v25CurrentAccount(){try{return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');}catch{return{};}}
+function v25IsAdmin(){const account=v25CurrentAccount(),username=String(account.username||'').toLowerCase(),role=String(account.role||'').toLowerCase();return username==='admin'||role.includes('ผู้จัดการ')||role.includes('admin');}
+function v25EnsureAccountControls(){
+  const anchor=document.getElementById('exportAllExcelButton');if(!anchor||document.getElementById('v25AccountControls'))return;
+  const controls=document.createElement('div');controls.id='v25AccountControls';controls.className='flex shrink-0 items-center gap-1.5';
+  controls.innerHTML=`<button id="v25PkSwitchButton" type="button" onclick="v25OpenPkSwitcher()" class="hidden rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs font-black text-amber-900 hover:bg-amber-100" title="เปลี่ยนพื้นที่"><i class="fa-solid fa-arrow-right-arrow-left"></i><span class="ml-1 hidden xl:inline">เปลี่ยน PK</span></button><button id="v25HeaderLogoutButton" type="button" onclick="logoutUser()" class="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-black text-white hover:bg-red-700" title="ออกจากระบบ"><i class="fa-solid fa-right-from-bracket"></i><span class="ml-1 hidden xl:inline">ออกจากระบบ</span></button>`;
+  anchor.insertAdjacentElement('afterend',controls);
+  document.getElementById('v25PkSwitchButton')?.classList.toggle('hidden',!v25IsAdmin());
+  if(!document.getElementById('v25PkSwitcherModal'))document.body.insertAdjacentHTML('beforeend',`<div id="v25PkSwitcherModal" class="fixed inset-0 z-[260] hidden items-center justify-center bg-slate-950/70 p-4"><div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div class="flex items-center justify-between"><div><h2 class="text-xl font-black text-slate-900">เปลี่ยนพื้นที่ใช้งาน</h2><p class="mt-1 text-sm text-slate-500">บัญชี admin สลับพื้นที่ได้โดยไม่ต้องออกจากระบบ</p></div><button type="button" onclick="v25ClosePkSwitcher()" class="h-10 w-10 rounded-full bg-slate-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button></div><div id="v25PkChoices" class="mt-5 grid grid-cols-3 gap-3">${FACTORY_SITES.map(site=>`<button type="button" data-v25-site="${site}" onclick="v25SwitchFactorySite('${site}')" class="min-h-20 rounded-xl border-2 bg-white text-lg font-black uppercase text-slate-700 hover:border-amber-500 hover:bg-amber-50">${site.toUpperCase()}</button>`).join('')}</div><p class="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">ข้อมูลเครื่องจักร ใบงาน PM สต็อก และประวัติของแต่ละ PK แยกจากกันทั้งหมด</p></div></div>`);
+}
+function v25PaintPkChoices(){const current=factorySite();document.querySelectorAll('[data-v25-site]').forEach(button=>{const active=button.dataset.v25Site===current;button.classList.toggle('border-amber-500',active);button.classList.toggle('bg-amber-500',active);button.classList.toggle('text-slate-950',active);button.classList.toggle('border-slate-200',!active);});}
+function v25OpenPkSwitcher(){if(!v25IsAdmin())return showFactoryToast?.('เฉพาะบัญชี admin เท่านั้นที่เปลี่ยน PK ได้','error');v25EnsureAccountControls();v25PaintPkChoices();document.getElementById('v25PkSwitcherModal')?.classList.replace('hidden','flex');}
+function v25ClosePkSwitcher(){document.getElementById('v25PkSwitcherModal')?.classList.replace('flex','hidden');}
+async function v25SwitchFactorySite(site){
+  if(!v25IsAdmin()||!FACTORY_SITES.includes(site))return;
+  if(site===factorySite()){v25ClosePkSwitcher();return;}
+  const buttons=document.querySelectorAll('[data-v25-site]');buttons.forEach(button=>button.disabled=true);
+  try{
+    for(let attempt=0;attempt<20&&productionSaving;attempt++)await new Promise(resolve=>setTimeout(resolve,100));
+    clearTimeout(productionSaveTimer);clearTimeout(v23RetryTimer);clearInterval(productionPollTimer);
+    const url=new URL(location.href);url.searchParams.set('site',site);history.replaceState(null,'',url.pathname+url.search+url.hash);v24SetFactorySite(site);
+    remoteSyncState='disabled';v21CentralHydrated=false;v21CentralSavePending=false;v23PendingRemoteSnapshot=null;v23BaseSnapshot=null;productionRevision=0;
+    let cached=null;try{cached=JSON.parse(localStorage.getItem(v24SiteStorageKey(site))||'null');}catch{}
+    const preview=Array.isArray(cached?.machinesState)?cached:v24FreshSiteSnapshot();preview._revision=Number(cached?._revision||0);preview._site=site;applyProductionSnapshot(preview);v24UpdateSiteChrome();v23SyncIndicator('syncing');
+    await startRealtimeSync();v25PaintPkChoices();v25ClosePkSwitcher();switchView('dashboard');renderDashboardCards();showFactoryToast?.(`เปลี่ยนเป็น ${site.toUpperCase()} แล้ว`,'success');
+  }finally{buttons.forEach(button=>button.disabled=false);}
+}
+const v25BaseFinishProductionLogin=finishProductionLogin;
+finishProductionLogin=async function(user,token){await v25BaseFinishProductionLogin(user,token);v25EnsureAccountControls();document.getElementById('v25PkSwitchButton')?.classList.toggle('hidden',!v25IsAdmin());v25PaintPkChoices();};
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{if(!document.getElementById('loginScreen'))v25EnsureAccountControls();},500));
+
 </script>
 </body>
 </html>
