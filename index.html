@@ -3896,7 +3896,7 @@ async function v29PersistMachineDelta(machine){
   clearTimeout(productionSaveTimer);v29DeltaSaveUntil=Date.now()+2500;productionSaving=true;v23SyncIndicator('syncing');
   try{
     const {data,error}=await client.rpc('update_factory_machine_site',{p_token:token,p_site:site,p_machine:String(machine.number),p_machine_data:machine});if(error)throw error;
-    productionRevision=Number(data?.revision||productionRevision+1);v23BaseSnapshot=v23Clone(productionSnapshot());v27LastRemoteSignature=v27SnapshotSignature(productionSnapshot());v26WriteLocalSnapshot(site,productionSnapshot());remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+    productionRevision=Number(data?.revision||productionRevision+1);v23BaseSnapshot=v23Clone(productionSnapshot());v27LastRemoteSignature=v27SnapshotSignature(productionSnapshot());v26WriteLocalSnapshot(site,productionSnapshot());remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');return data;
   }catch(error){
     const message=String(error?.message||error||'เชื่อมต่อไม่ได้');v29DeltaSaveUntil=0;v23LastError=message;v23SyncIndicator('offline',message);showFactoryToast?.(`ส่งสถานะเครื่อง ${machine.number} ไม่สำเร็จ: ${message}`,'error');setTimeout(()=>persistProductionSnapshot(productionSnapshot()),250);
   }finally{productionSaving=false;}
@@ -3925,6 +3925,37 @@ loadProductionSnapshot=async function(silent=false){
     const message=String(error?.message||error||'เชื่อมต่อไม่ได้');remoteSyncState='disabled';v23LastError=message;v23SyncIndicator('offline',message);if(!silent)showFactoryToast?.(`โหลด ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');
   }finally{v23PollBusy=false;}
 };
+
+/* ===== Durable machine-event queue v30 ===== */
+let v30MachineEventCursor=null,v30MachineEventSite='',v30MachineEventPollBusy=false,v30MachineEventTimer=null;
+function v30ApplyMachineEvent(machine){
+  if(!machine)return false;
+  const index=(machinesState||[]).findIndex(item=>String(item.number)===String(machine.number));
+  if(index<0)return false;
+  machinesState[index]={...machinesState[index],...machine};
+  v23BaseSnapshot=v23Clone(productionSnapshot());v27LastRemoteSignature=v27SnapshotSignature(productionSnapshot());
+  v26WriteLocalSnapshot(factorySite(),productionSnapshot());renderDashboardCards();updateDashboardTicketAlert?.();updateTicketWorkflowUI?.();
+  return true;
+}
+async function v30PollMachineEvents(){
+  if(v30MachineEventPollBusy)return;
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;
+  if(site!==v30MachineEventSite){v30MachineEventSite=site;v30MachineEventCursor=null;}
+  v30MachineEventPollBusy=true;
+  try{
+    const {data,error}=await client.rpc('get_factory_machine_events_site',{p_token:token,p_site:site,p_after_id:v30MachineEventCursor});if(error)throw error;
+    const changes=Array.isArray(data?.changes)?data.changes:[];
+    changes.forEach(change=>v30ApplyMachineEvent(change?.machine));
+    if(data?.cursor!==undefined&&data?.cursor!==null)v30MachineEventCursor=Number(data.cursor);
+    if(changes.length){remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');}
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');console.warn('Machine event polling failed',message);
+  }finally{v30MachineEventPollBusy=false;}
+}
+function v30StartMachineEventPolling(){
+  clearInterval(v30MachineEventTimer);v30PollMachineEvents();v30MachineEventTimer=setInterval(v30PollMachineEvents,1200);
+}
+window.addEventListener('DOMContentLoaded',()=>setTimeout(v30StartMachineEventPolling,1800));
 
 </script>
 </body>
