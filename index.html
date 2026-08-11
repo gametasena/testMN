@@ -3978,6 +3978,82 @@ submitCloseRepair=async function(event){
   return result;
 };
 
+/* ===== Realtime section and record patches for every menu v32 ===== */
+let v32SectionCursor=null,v32SectionSite='',v32SectionBaseline=null,v32SectionPollBusy=false,v32SectionSaveBusy=false,v32SectionPollTimer=null;
+function v32Clone(value){try{return structuredClone(value);}catch{return JSON.parse(JSON.stringify(value));}}
+function v32Json(value){try{return JSON.stringify(value);}catch{return '';}}
+function v32RowId(row){for(const key of['id','_serverId','number','username'])if(row&&row[key]!==undefined&&row[key]!==null)return String(row[key]);return '';}
+function v32ApplyPatchToSnapshot(source,patch){
+  const next=v32Clone(source||{});
+  Object.entries(patch?.set||{}).forEach(([key,value])=>{next[key]=v32Clone(value);});
+  Object.entries(patch?.arrayPatch||{}).forEach(([key,operation])=>{
+    const idField=operation.key||'id',rows=Array.isArray(next[key])?next[key]:[],remove=new Set((operation.remove||[]).map(String));
+    const map=new Map(rows.filter(row=>!remove.has(String(row?.[idField]))).map(row=>[String(row?.[idField]),row]));
+    (operation.upsert||[]).forEach(row=>map.set(String(row?.[idField]),v32Clone(row)));next[key]=[...map.values()];
+  });
+  Object.entries(patch?.objectPatch||{}).forEach(([key,operation])=>{
+    const object={...(next[key]&&typeof next[key]==='object'&&!Array.isArray(next[key])?next[key]:{})};
+    (operation.remove||[]).forEach(name=>delete object[name]);Object.entries(operation.set||{}).forEach(([name,value])=>object[name]=v32Clone(value));next[key]=object;
+  });
+  return next;
+}
+function v32BuildPatch(previous,current){
+  const patch={set:{},arrayPatch:{},objectPatch:{}},keys=new Set([...Object.keys(previous||{}),...Object.keys(current||{})]);
+  for(const key of keys){
+    if(['_revision','_syncOrigin','_site'].includes(key))continue;
+    const before=previous?.[key],after=current?.[key],beforeJson=v32Json(before),afterJson=v32Json(after);if(beforeJson===afterJson)continue;
+    if(Array.isArray(after)&&afterJson.length>180000){
+      const beforeRows=Array.isArray(before)?before:[],valid=after.every(row=>v32RowId(row))&&beforeRows.every(row=>v32RowId(row));
+      if(valid){const oldMap=new Map(beforeRows.map(row=>[v32RowId(row),row])),newMap=new Map(after.map(row=>[v32RowId(row),row])),upsert=after.filter(row=>v32Json(oldMap.get(v32RowId(row)))!==v32Json(row)),remove=beforeRows.filter(row=>!newMap.has(v32RowId(row))).map(v32RowId);patch.arrayPatch[key]={key:['id','_serverId','number','username'].find(field=>after.every(row=>row?.[field]!==undefined))||'id',upsert,remove};continue;}
+    }
+    if(after&&typeof after==='object'&&!Array.isArray(after)&&afterJson.length>180000){
+      const set={},remove=[];for(const name of new Set([...Object.keys(before||{}),...Object.keys(after||{})])){if(!(name in after))remove.push(name);else if(v32Json(before?.[name])!==v32Json(after[name]))set[name]=after[name];}patch.objectPatch[key]={set,remove};continue;
+    }
+    patch.set[key]=after===undefined?null:after;
+  }
+  if(!Object.keys(patch.set).length)delete patch.set;if(!Object.keys(patch.arrayPatch).length)delete patch.arrayPatch;if(!Object.keys(patch.objectPatch).length)delete patch.objectPatch;
+  return patch;
+}
+function v32PatchIsEmpty(patch){return!patch||(!Object.keys(patch.set||{}).length&&!Object.keys(patch.arrayPatch||{}).length&&!Object.keys(patch.objectPatch||{}).length);}
+async function v32PersistSectionChanges(){
+  if(v32SectionSaveBusy||!v32SectionBaseline)return;
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;
+  const current=productionSnapshot(),patch=v32BuildPatch(v32SectionBaseline,current);if(v32PatchIsEmpty(patch))return;
+  v32SectionSaveBusy=true;v23SyncIndicator('syncing');
+  try{
+    const {data,error}=await client.rpc('update_factory_sections_site',{p_token:token,p_site:site,p_patch:patch});if(error)throw error;
+    productionRevision=Math.max(productionRevision,Number(data?.revision||0));v32SectionBaseline=v32Clone(productionSnapshot());remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  }catch(error){const message=String(error?.message||error||'เชื่อมต่อไม่ได้');v23LastError=message;v23SyncIndicator('offline',message);showFactoryToast?.(`บันทึกข้อมูล ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');}
+  finally{v32SectionSaveBusy=false;}
+}
+queueRemoteSave=function(){
+  if(!productionToken()||productionApplying)return;clearTimeout(productionSaveTimer);productionSaveTimer=setTimeout(v32PersistSectionChanges,300);
+};
+function v32ApplyRemotePatch(patch,stateRevision){
+  if(v32PatchIsEmpty(patch))return;
+  const draft=v29CaptureActiveDraft(),current=v32ApplyPatchToSnapshot(productionSnapshot(),patch),baseline=v32ApplyPatchToSnapshot(v32SectionBaseline||productionSnapshot(),patch);
+  current._revision=Math.max(productionRevision,Number(stateRevision||0));applyProductionSnapshot(current);productionRevision=Number(current._revision||productionRevision);v32SectionBaseline=baseline;v29RestoreActiveDraft(draft);
+}
+async function v32PollSectionEvents(){
+  if(v32SectionPollBusy)return;const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;
+  if(site!==v32SectionSite){v32SectionSite=site;v32SectionCursor=null;v32SectionBaseline=null;}
+  v32SectionPollBusy=true;
+  try{
+    const {data,error}=await client.rpc('get_factory_section_events_site',{p_token:token,p_site:site,p_after_id:v32SectionCursor});if(error)throw error;
+    if(v32SectionBaseline===null)v32SectionBaseline=v32Clone(productionSnapshot());
+    for(const change of(Array.isArray(data?.changes)?data.changes:[])){v32ApplyRemotePatch(change?.patch,change?.stateRevision);}
+    if(data?.cursor!==undefined&&data?.cursor!==null)v32SectionCursor=Number(data.cursor);remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+    if(data?.hasMore)setTimeout(v32PollSectionEvents,0);
+  }catch(error){const message=String(error?.message||error||'เชื่อมต่อไม่ได้');console.warn('Section event polling failed',message);v23LastError=message;v23SyncIndicator('offline',message);}
+  finally{v32SectionPollBusy=false;}
+}
+function v32StartSectionSync(){
+  clearInterval(productionPollTimer);productionPollTimer=null;clearInterval(v32SectionPollTimer);v32PollSectionEvents();v32SectionPollTimer=setInterval(v32PollSectionEvents,1200);
+}
+const v32BaseStartRealtimeSync=startRealtimeSync;
+startRealtimeSync=async function(){await v32BaseStartRealtimeSync();v32SectionSite='';v32SectionCursor=null;v32SectionBaseline=v32Clone(productionSnapshot());v32StartSectionSync();};
+window.addEventListener('DOMContentLoaded',()=>setTimeout(v32StartSectionSync,2200));
+
 </script>
 </body>
 </html>
