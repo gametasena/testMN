@@ -4237,13 +4237,7 @@ async function v36StartRealtimeBroadcast(){
     const payload=message?.payload||{};
     if(payload.site&&payload.site!==factorySite())return;
     if(payload.origin===SYNC_CLIENT_ID)return;
-    v36ScheduleAuthoritativePull(20);
-  });
-  channel.on('broadcast',{event:'factory_refresh'},message=>{
-    const payload=message?.payload||{};
-    if(payload.site&&payload.site!==factorySite())return;
-    if(payload.origin===SYNC_CLIENT_ID)return;
-    v37ScheduleFullPageRefresh(Number(payload.revision||0),'remote');
+    v38ScheduleCentralPull(Number(payload.revision||0),payload.kind||'state');
   });
   channel.subscribe(status=>{
     if(channel!==v36RealtimeChannel)return;
@@ -4295,49 +4289,72 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden){v36StartR
 window.addEventListener('online',()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);});
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);},2800));
 
-/* ===== Refresh every connected device after each confirmed save v37 ===== */
-let v37RefreshTimer=null,v37Publishing=false,v37LastPublishedRevision=0;
-function v37ScheduleFullPageRefresh(revision=0,source='remote'){
-  if(v37RefreshTimer)return;
-  const site=factorySite();
-  try{sessionStorage.setItem('smartFactoryLastRefreshSignal_v37',`${site}|${Number(revision||0)}|${Date.now()}`);}catch{}
-  v23SyncIndicator('syncing');
-  showFactoryToast?.(source==='local'?'บันทึกสำเร็จ · กำลังรีเฟรชข้อมูลทุกเครื่อง':'มีข้อมูลใหม่ · กำลังรีเฟรชจากส่วนกลาง','success');
-  v37RefreshTimer=setTimeout(()=>location.reload(),source==='local'?650:220);
-}
-async function v37PublishRefreshAfterSave(revision=productionRevision,kind='state'){
-  const currentRevision=Number(revision||0);
-  if(v37Publishing||!currentRevision||currentRevision<=v37LastPublishedRevision)return;
-  v37Publishing=true;v37LastPublishedRevision=currentRevision;
-  try{
-    if(v36RealtimeChannel&&v36RealtimeReady){
-      const send=v36RealtimeChannel.send({type:'broadcast',event:'factory_refresh',payload:{site:factorySite(),revision:currentRevision,kind,origin:SYNC_CLIENT_ID,at:Date.now()}});
-      await Promise.race([Promise.resolve(send),new Promise(resolve=>setTimeout(resolve,900))]);
-    }else{
-      v36BroadcastChange(currentRevision,kind);
-    }
-  }catch(error){console.warn('Refresh signal failed; polling will recover the update',error);}
-  finally{v37Publishing=false;v37ScheduleFullPageRefresh(currentRevision,'local');}
+/* ===== Central realtime sync without page reloads v38 ===== */
+let v38CentralPullTimer=null,v38CentralSaveTimer=null,v38CentralSavePending=false,v38LastNoticeRevision=0;
+
+function v38RefreshSharedMenu(){
+  v33RefreshVisibleRealtimeView?.();
+  if(v33VisibleViewId?.()==='view-settings'){
+    v6EnsureOperationSettings?.();
+    ensureSystemSettings?.();
+    renderAccounts?.();
+  }
 }
 
-const v37BasePersistSectionChanges=v32PersistSectionChanges;
+/* A broadcast is only a wake-up signal.  The authoritative values are always
+   pulled from Supabase, so every client in the same PK ends with the same data
+   without reloading the page or interrupting typing. */
+function v38ScheduleCentralPull(targetRevision=0,kind='state'){
+  clearTimeout(v38CentralPullTimer);
+  v38CentralPullTimer=setTimeout(async()=>{
+    const before=Number(productionRevision||0);
+    try{
+      await v32PollSectionEvents();
+      await v30PollMachineEvents?.();
+      if(Number(targetRevision||0)>Number(productionRevision||0))await v35ReconcileSharedState(true);
+      v38RefreshSharedMenu();
+      const current=Number(productionRevision||0);
+      if(current>before&&current>v38LastNoticeRevision){
+        v38LastNoticeRevision=current;
+        showFactoryToast?.(`ข้อมูล ${factorySite().toUpperCase()} อัปเดตจากส่วนกลางแล้ว`,'success');
+      }
+    }catch(error){
+      console.warn('Central realtime pull failed; polling will retry',error);
+      setTimeout(()=>v35ReconcileSharedState(true),900);
+    }
+  },25);
+}
+
+/* Never lose a second save while the previous write is still in flight. */
+const v38BasePersistSectionChanges=v32PersistSectionChanges;
 v32PersistSectionChanges=async function(){
-  const before=Number(productionRevision||0),result=await v37BasePersistSectionChanges();
-  if(Number(productionRevision||0)>before)void v37PublishRefreshAfterSave(productionRevision,'sections');
+  if(v32SectionSaveBusy){v38CentralSavePending=true;return;}
+  v38CentralSavePending=false;
+  const beforeRevision=Number(productionRevision||0);
+  const result=await v38BasePersistSectionChanges();
+  const saved=Number(productionRevision||0)>beforeRevision;
+  const stillDirty=v32SectionBaseline&&!v32PatchIsEmpty(v32BuildPatch(v32SectionBaseline,productionSnapshot()));
+  if(v38CentralSavePending||stillDirty){
+    v38CentralSavePending=false;
+    clearTimeout(v38CentralSaveTimer);
+    v38CentralSaveTimer=setTimeout(()=>v32PersistSectionChanges(),stillDirty&&!saved?2200:80);
+  }
   return result;
 };
-const v37BasePersistMachineDelta=v29PersistMachineDelta;
-v29PersistMachineDelta=async function(machine){
-  const before=Number(productionRevision||0),result=await v37BasePersistMachineDelta(machine);
-  if(Number(productionRevision||0)>before)void v37PublishRefreshAfterSave(productionRevision,'machine');
-  return result;
+
+queueRemoteSave=function(){
+  if(!productionToken()||productionApplying)return;
+  v38CentralSavePending=true;
+  clearTimeout(productionSaveTimer);clearTimeout(v38CentralSaveTimer);
+  productionSaveTimer=setTimeout(()=>{
+    v38CentralSavePending=false;
+    v32PersistSectionChanges();
+  },220);
 };
-const v37BasePersistProductionSnapshot=persistProductionSnapshot;
-persistProductionSnapshot=async function(snapshot,retry=true){
-  const before=Number(productionRevision||0),result=await v37BasePersistProductionSnapshot(snapshot,retry);
-  if(Number(productionRevision||0)>before)void v37PublishRefreshAfterSave(productionRevision,'snapshot');
-  return result;
-};
+
+window.addEventListener('focus',()=>v38ScheduleCentralPull(0,'focus'));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)v38ScheduleCentralPull(0,'visible');});
+window.addEventListener('online',()=>v38ScheduleCentralPull(0,'online'));
 
 </script>
 </body>
