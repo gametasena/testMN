@@ -4124,6 +4124,42 @@ saveAssignTicketData=function(){
   void(async()=>{await v34ForceSectionSync();if(ticket)await v34PublishTicketMachine(ticket,'completed');await v34ForceSectionSync();})();return result;
 };
 
+/* ===== Authoritative recovery when a sleeping/background device misses an event v35 ===== */
+let v35ReconcileBusy=false,v35ReconcileTimer=null,v35LastAppliedAt=0;
+async function v35ReconcileSharedState(force=false){
+  if(v35ReconcileBusy||productionSaving||productionApplying||v32SectionSaveBusy||v23Editing())return false;
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return false;
+  if(v32SectionBaseline&&!v32PatchIsEmpty(v32BuildPatch(v32SectionBaseline,productionSnapshot())))return false;
+  v35ReconcileBusy=true;
+  try{
+    const revisionResult=await client.rpc('get_factory_revision_site',{p_token:token,p_site:site});if(revisionResult.error)throw revisionResult.error;
+    const remoteRevision=Number(revisionResult.data?.revision||0);
+    if(!force&&remoteRevision===Number(productionRevision||0))return true;
+    const snapshotResult=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(snapshotResult.error)throw snapshotResult.error;
+    if(productionSaving||productionApplying||v32SectionSaveBusy||v23Editing())return false;
+    const snapshot=snapshotResult.data;if(!snapshot)return false;
+    const draft=v29CaptureActiveDraft();applyProductionSnapshot(snapshot);productionRevision=Number(snapshot._revision||remoteRevision);
+    v23BaseSnapshot=v23Clone(snapshot);v32SectionBaseline=v32Clone(productionSnapshot());v23PendingRemoteSnapshot=null;
+    v26WriteLocalSnapshot(site,productionSnapshot());v33RefreshVisibleRealtimeView();v29RestoreActiveDraft(draft);
+    v35LastAppliedAt=Date.now();remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');return true;
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');console.warn('Authoritative reconciliation failed',message);
+    v23LastError=message;v23SyncIndicator('offline',message);return false;
+  }finally{v35ReconcileBusy=false;}
+}
+function v35StartReconciliation(){
+  clearInterval(v35ReconcileTimer);v35ReconcileTimer=setInterval(()=>v35ReconcileSharedState(false),4000);
+  setTimeout(()=>v35ReconcileSharedState(true),700);
+}
+const v35BaseStartRealtimeSync=startRealtimeSync;
+startRealtimeSync=async function(){const result=await v35BaseStartRealtimeSync();v35StartReconciliation();await v35ReconcileSharedState(true);return result;};
+const v35BaseSwitchView=switchView;
+switchView=function(viewId){const result=v35BaseSwitchView(viewId);if(viewId==='ticket')setTimeout(()=>v35ReconcileSharedState(true),700);return result;};
+window.addEventListener('focus',()=>v35ReconcileSharedState(true));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)v35ReconcileSharedState(true);});
+window.addEventListener('online',()=>v35ReconcileSharedState(true));
+window.addEventListener('DOMContentLoaded',()=>setTimeout(v35StartReconciliation,2500));
+
 </script>
 </body>
 </html>
