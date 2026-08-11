@@ -3721,7 +3721,11 @@ persistProductionSnapshot=async function(snapshot,retry=true){
   productionSaving=true;v23SyncIndicator('syncing');clearTimeout(v23RetryTimer);
   try{
     const {data,error}=await client.rpc('save_factory_snapshot_site',{p_token:token,p_site:site,p_data:snapshot,p_expected_revision:productionRevision});if(error)throw error;
-    if(data?.conflict&&retry){const remote=data.data||{},merged=v23MergeSnapshot(remote,snapshot);productionRevision=Number(remote._revision||0);v23BaseSnapshot=v23Clone(remote);productionSaving=false;return persistProductionSnapshot(merged,false);}
+    if(data?.conflict&&retry){
+      let remote=data.data;
+      if(!remote){const latest=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(latest.error)throw latest.error;remote=latest.data||{};}
+      const merged=v23MergeSnapshot(remote,snapshot);productionRevision=Number(remote._revision||data?.revision||0);v23BaseSnapshot=v23Clone(remote);productionSaving=false;return persistProductionSnapshot(merged,false);
+    }
     if(data?.conflict){applyProductionSnapshot(data.data);v23BaseSnapshot=v23Clone(data.data);return;}
     const saved=data?.data;if(saved){productionRevision=Number(saved._revision||productionRevision);v23BaseSnapshot=v23Clone(saved);localStorage.setItem(v24SiteStorageKey(site),JSON.stringify(saved));}
     v23LastError='';remoteSyncState='ready';v23SyncIndicator('online');
@@ -3845,6 +3849,27 @@ persistProductionSnapshot=async function(snapshot,retry=true){
   }finally{productionSaving=false;}
 };
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>v26WriteLocalSnapshot(factorySite(),productionSnapshot()),1800));
+
+/* ===== Lightweight cross-device revision polling v28 ===== */
+loadProductionSnapshot=async function(silent=false){
+  if(v23PollBusy)return;
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;
+  v23PollBusy=true;
+  try{
+    const revisionResult=await client.rpc('get_factory_revision_site',{p_token:token,p_site:site});if(revisionResult.error)throw revisionResult.error;
+    const remoteRevision=Number(revisionResult.data?.revision||0);
+    if(remoteRevision!==productionRevision){
+      const snapshotResult=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(snapshotResult.error)throw snapshotResult.error;
+      const snapshot=snapshotResult.data;
+      if(v23Editing()){v23PendingRemoteSnapshot=snapshot;productionRevision=Number(snapshot?._revision||remoteRevision);}
+      else{applyProductionSnapshot(snapshot);v23BaseSnapshot=v23Clone(snapshot);v23PendingRemoteSnapshot=null;productionRevision=Number(snapshot?._revision||remoteRevision);}
+    }
+    remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');remoteSyncState='disabled';v23LastError=message;v23SyncIndicator('offline',message);
+    if(!silent)showFactoryToast?.(`โหลด ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');
+  }finally{v23PollBusy=false;}
+};
 
 </script>
 </body>
