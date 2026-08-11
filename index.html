@@ -4032,7 +4032,7 @@ queueRemoteSave=function(){
 function v32ApplyRemotePatch(patch,stateRevision){
   if(v32PatchIsEmpty(patch))return;
   const draft=v29CaptureActiveDraft(),current=v32ApplyPatchToSnapshot(productionSnapshot(),patch),baseline=v32ApplyPatchToSnapshot(v32SectionBaseline||productionSnapshot(),patch);
-  current._revision=Math.max(productionRevision,Number(stateRevision||0));applyProductionSnapshot(current);productionRevision=Number(current._revision||productionRevision);v32SectionBaseline=baseline;v29RestoreActiveDraft(draft);
+  current._revision=Math.max(productionRevision,Number(stateRevision||0));applyProductionSnapshot(current);productionRevision=Number(current._revision||productionRevision);v32SectionBaseline=baseline;v33RefreshVisibleRealtimeView();v29RestoreActiveDraft(draft);
 }
 async function v32PollSectionEvents(){
   if(v32SectionPollBusy)return;const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;
@@ -4053,6 +4053,25 @@ function v32StartSectionSync(){
 const v32BaseStartRealtimeSync=startRealtimeSync;
 startRealtimeSync=async function(){await v32BaseStartRealtimeSync();v32SectionSite='';v32SectionCursor=null;v32SectionBaseline=v32Clone(productionSnapshot());v32StartSectionSync();};
 window.addEventListener('DOMContentLoaded',()=>setTimeout(v32StartSectionSync,2200));
+
+/* ===== Refresh whichever menu is currently visible after remote data v33 ===== */
+function v33VisibleViewId(){
+  const view=[...document.querySelectorAll('main > section[id^="view-"]')].find(section=>!section.classList.contains('hidden'));
+  return view?.id||'';
+}
+function v33RefreshVisibleRealtimeView(){
+  updateDashboardTicketAlert?.();updateTicketWorkflowUI?.();updateTicketMenuBadges?.();updateTabBadges?.();updatePmMenuAlert?.();
+  const view=v33VisibleViewId();
+  if(view==='view-dashboard')renderDashboardCards?.();
+  else if(view==='view-ticket'){renderTechTab?.();renderInspectorTab?.();renderTicketHistoryTab?.();updateTicketWorkflowUI?.();}
+  else if(view==='view-stock')v10RenderStock?.();
+  else if(view==='view-history')renderHistoryTable?.();
+  else if(view==='view-pm'){renderGlobalPMDashboard?.();renderPMEntryRows?.();renderMachinePMHistory?.();}
+  else if(view==='view-statistics')updateStatisticsReports?.();
+  else if(view==='view-masterdata'){renderMasterDataView?.();renderMasterPartsManager?.();}
+  else if(view==='view-qrcode')renderMachineQRCodes?.();
+  else if(view==='view-repair'){syncMasterDataToDOM?.();populateFormChecklists?.();}
+}
 
 </script>
 </body>
