@@ -3957,6 +3957,27 @@ function v30StartMachineEventPolling(){
 }
 window.addEventListener('DOMContentLoaded',()=>setTimeout(v30StartMachineEventPolling,1800));
 
+/* ===== Closing a repair also publishes a durable machine event v31 ===== */
+const v31BaseSubmitCloseRepair=submitCloseRepair;
+submitCloseRepair=async function(event){
+  const form=document.getElementById('repairForm');
+  const mode=form?.dataset.workflowMode||'';
+  const machineNumber=form?.dataset.workflowMachine||document.getElementById('repairMachineSelect')?.value||'';
+  const before=(machinesState||[]).find(item=>String(item.number)===String(machineNumber));
+  const beforeText=JSON.stringify(before||null);
+  const result=await v31BaseSubmitCloseRepair(event);
+  const after=(machinesState||[]).find(item=>String(item.number)===String(machineNumber));
+  if(after&&JSON.stringify(after)!==beforeText){
+    v29DeltaSaveUntil=Date.now()+2500;clearTimeout(productionSaveTimer);
+    await v29PersistMachineDelta(after);
+    if(mode!=='report'&&(after.workflowStage==='normal'||after.status==='normal')){
+      after.workflowStage='normal';after.status='normal';after.currentRepairStart=null;after.repairStartedAt=null;
+      renderDashboardCards();showFactoryToast?.(`ปิดงานเครื่อง ${after.number} และคืนสถานะพร้อมใช้งานแล้ว`,'success');
+    }
+  }
+  return result;
+};
+
 </script>
 </body>
 </html>
