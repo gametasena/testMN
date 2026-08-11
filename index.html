@@ -3871,6 +3871,61 @@ loadProductionSnapshot=async function(silent=false){
   }finally{v23PollBusy=false;}
 };
 
+/* ===== Instant machine-status delta sync v29 ===== */
+let v29DeltaSaveUntil=0;
+const v29BaseQueueRemoteSave=queueRemoteSave;
+queueRemoteSave=function(){if(Date.now()<v29DeltaSaveUntil)return;return v29BaseQueueRemoteSave();};
+function v29CaptureActiveDraft(){
+  const active=document.activeElement;if(!active||!/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))return null;
+  return{id:active.id||'',name:active.name||'',type:active.type||'',value:active.value,checked:active.checked,start:active.selectionStart,end:active.selectionEnd};
+}
+function v29RestoreActiveDraft(draft){
+  if(!draft)return;let field=draft.id?document.getElementById(draft.id):null;
+  if(!field&&draft.name)field=document.querySelector(`[name="${CSS.escape(draft.name)}"]`);if(!field)return;
+  if(['checkbox','radio'].includes(draft.type))field.checked=draft.checked;else field.value=draft.value;
+  try{field.focus({preventScroll:true});if(Number.isInteger(draft.start)&&field.setSelectionRange)field.setSelectionRange(draft.start,draft.end);}catch{}
+}
+function v29ApplyMachineDelta(machine,revision){
+  if(!machine)return false;const index=(machinesState||[]).findIndex(item=>String(item.number)===String(machine.number));
+  if(index>=0)machinesState[index]={...machinesState[index],...machine};else machinesState.push(machine);
+  productionRevision=Number(revision||productionRevision);v23BaseSnapshot=v23Clone(productionSnapshot());v27LastRemoteSignature=v27SnapshotSignature(productionSnapshot());
+  v26WriteLocalSnapshot(factorySite(),productionSnapshot());renderDashboardCards();updateDashboardTicketAlert?.();updateTicketWorkflowUI?.();return true;
+}
+async function v29PersistMachineDelta(machine){
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client||!machine)return;
+  clearTimeout(productionSaveTimer);v29DeltaSaveUntil=Date.now()+2500;productionSaving=true;v23SyncIndicator('syncing');
+  try{
+    const {data,error}=await client.rpc('update_factory_machine_site',{p_token:token,p_site:site,p_machine:String(machine.number),p_machine_data:machine});if(error)throw error;
+    productionRevision=Number(data?.revision||productionRevision+1);v23BaseSnapshot=v23Clone(productionSnapshot());v27LastRemoteSignature=v27SnapshotSignature(productionSnapshot());v26WriteLocalSnapshot(site,productionSnapshot());remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');v29DeltaSaveUntil=0;v23LastError=message;v23SyncIndicator('offline',message);showFactoryToast?.(`ส่งสถานะเครื่อง ${machine.number} ไม่สำเร็จ: ${message}`,'error');setTimeout(()=>persistProductionSnapshot(productionSnapshot()),250);
+  }finally{productionSaving=false;}
+}
+const v29BaseMachineWorkflowAction=requestedMachineWorkflowAction;
+requestedMachineWorkflowAction=async function(machineNumber){
+  const before=(machinesState||[]).find(item=>String(item.number)===String(machineNumber)),beforeText=JSON.stringify(before||null),result=await v29BaseMachineWorkflowAction(machineNumber),after=(machinesState||[]).find(item=>String(item.number)===String(machineNumber));
+  if(after&&JSON.stringify(after)!==beforeText){v29DeltaSaveUntil=Date.now()+2500;clearTimeout(productionSaveTimer);await v29PersistMachineDelta(after);}
+  return result;
+};
+machineWorkflowAction=requestedMachineWorkflowAction;window.machineWorkflowAction=requestedMachineWorkflowAction;
+loadProductionSnapshot=async function(silent=false){
+  if(v23PollBusy)return;const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return;v23PollBusy=true;
+  try{
+    const revisionResult=await client.rpc('get_factory_revision_site',{p_token:token,p_site:site});if(revisionResult.error)throw revisionResult.error;
+    const meta=revisionResult.data||{},remoteRevision=Number(meta.revision||0),delta=meta.changePayload;
+    if(remoteRevision!==productionRevision){
+      if(meta.changeKind==='machine'&&delta&&remoteRevision===productionRevision+1)v29ApplyMachineDelta(delta,remoteRevision);
+      else{
+        const snapshotResult=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(snapshotResult.error)throw snapshotResult.error;
+        const draft=v29CaptureActiveDraft(),snapshot=snapshotResult.data;applyProductionSnapshot(snapshot);v23BaseSnapshot=v23Clone(snapshot);v23PendingRemoteSnapshot=null;productionRevision=Number(snapshot?._revision||remoteRevision);v29RestoreActiveDraft(draft);
+      }
+    }
+    remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');remoteSyncState='disabled';v23LastError=message;v23SyncIndicator('offline',message);if(!silent)showFactoryToast?.(`โหลด ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');
+  }finally{v23PollBusy=false;}
+};
+
 </script>
 </body>
 </html>
