@@ -4239,6 +4239,12 @@ async function v36StartRealtimeBroadcast(){
     if(payload.origin===SYNC_CLIENT_ID)return;
     v36ScheduleAuthoritativePull(20);
   });
+  channel.on('broadcast',{event:'factory_refresh'},message=>{
+    const payload=message?.payload||{};
+    if(payload.site&&payload.site!==factorySite())return;
+    if(payload.origin===SYNC_CLIENT_ID)return;
+    v37ScheduleFullPageRefresh(Number(payload.revision||0),'remote');
+  });
   channel.subscribe(status=>{
     if(channel!==v36RealtimeChannel)return;
     if(status==='SUBSCRIBED'){
@@ -4288,6 +4294,50 @@ window.addEventListener('focus',()=>{v36StartRealtimeBroadcast();v36ScheduleAuth
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);}});
 window.addEventListener('online',()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);});
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);},2800));
+
+/* ===== Refresh every connected device after each confirmed save v37 ===== */
+let v37RefreshTimer=null,v37Publishing=false,v37LastPublishedRevision=0;
+function v37ScheduleFullPageRefresh(revision=0,source='remote'){
+  if(v37RefreshTimer)return;
+  const site=factorySite();
+  try{sessionStorage.setItem('smartFactoryLastRefreshSignal_v37',`${site}|${Number(revision||0)}|${Date.now()}`);}catch{}
+  v23SyncIndicator('syncing');
+  showFactoryToast?.(source==='local'?'บันทึกสำเร็จ · กำลังรีเฟรชข้อมูลทุกเครื่อง':'มีข้อมูลใหม่ · กำลังรีเฟรชจากส่วนกลาง','success');
+  v37RefreshTimer=setTimeout(()=>location.reload(),source==='local'?650:220);
+}
+async function v37PublishRefreshAfterSave(revision=productionRevision,kind='state'){
+  const currentRevision=Number(revision||0);
+  if(v37Publishing||!currentRevision||currentRevision<=v37LastPublishedRevision)return;
+  v37Publishing=true;v37LastPublishedRevision=currentRevision;
+  try{
+    if(v36RealtimeChannel&&v36RealtimeReady){
+      const send=v36RealtimeChannel.send({type:'broadcast',event:'factory_refresh',payload:{site:factorySite(),revision:currentRevision,kind,origin:SYNC_CLIENT_ID,at:Date.now()}});
+      await Promise.race([Promise.resolve(send),new Promise(resolve=>setTimeout(resolve,900))]);
+    }else{
+      v36BroadcastChange(currentRevision,kind);
+    }
+  }catch(error){console.warn('Refresh signal failed; polling will recover the update',error);}
+  finally{v37Publishing=false;v37ScheduleFullPageRefresh(currentRevision,'local');}
+}
+
+const v37BasePersistSectionChanges=v32PersistSectionChanges;
+v32PersistSectionChanges=async function(){
+  const before=Number(productionRevision||0),result=await v37BasePersistSectionChanges();
+  if(Number(productionRevision||0)>before)void v37PublishRefreshAfterSave(productionRevision,'sections');
+  return result;
+};
+const v37BasePersistMachineDelta=v29PersistMachineDelta;
+v29PersistMachineDelta=async function(machine){
+  const before=Number(productionRevision||0),result=await v37BasePersistMachineDelta(machine);
+  if(Number(productionRevision||0)>before)void v37PublishRefreshAfterSave(productionRevision,'machine');
+  return result;
+};
+const v37BasePersistProductionSnapshot=persistProductionSnapshot;
+persistProductionSnapshot=async function(snapshot,retry=true){
+  const before=Number(productionRevision||0),result=await v37BasePersistProductionSnapshot(snapshot,retry);
+  if(Number(productionRevision||0)>before)void v37PublishRefreshAfterSave(productionRevision,'snapshot');
+  return result;
+};
 
 </script>
 </body>
