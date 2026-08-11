@@ -4129,7 +4129,8 @@ let v35ReconcileBusy=false,v35ReconcileTimer=null,v35LastAppliedAt=0;
 async function v35ReconcileSharedState(force=false){
   if(v35ReconcileBusy||productionSaving||productionApplying||v32SectionSaveBusy||v23Editing())return false;
   const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return false;
-  if(v32SectionBaseline&&!v32PatchIsEmpty(v32BuildPatch(v32SectionBaseline,productionSnapshot())))return false;
+  const localPatch=v32SectionBaseline?v32BuildPatch(v32SectionBaseline,productionSnapshot()):null;
+  const hasLocalChanges=!v32PatchIsEmpty(localPatch);
   v35ReconcileBusy=true;
   try{
     const revisionResult=await client.rpc('get_factory_revision_site',{p_token:token,p_site:site});if(revisionResult.error)throw revisionResult.error;
@@ -4138,6 +4139,17 @@ async function v35ReconcileSharedState(force=false){
     const snapshotResult=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(snapshotResult.error)throw snapshotResult.error;
     if(productionSaving||productionApplying||v32SectionSaveBusy||v23Editing())return false;
     const snapshot=snapshotResult.data;if(!snapshot)return false;
+    if(hasLocalChanges){
+      const local=productionSnapshot(),dirtyKeys=new Set([
+        ...Object.keys(localPatch?.set||{}),...Object.keys(localPatch?.arrayPatch||{}),...Object.keys(localPatch?.objectPatch||{})
+      ]),merged=v32Clone(snapshot);
+      dirtyKeys.forEach(key=>{if(Object.prototype.hasOwnProperty.call(local,key))merged[key]=v32Clone(local[key]);else delete merged[key];});
+      const draft=v29CaptureActiveDraft();applyProductionSnapshot(merged);productionRevision=Number(snapshot._revision||remoteRevision);
+      v23BaseSnapshot=v23Clone(snapshot);v32SectionBaseline=v32Clone(snapshot);v23PendingRemoteSnapshot=null;
+      v26WriteLocalSnapshot(site,productionSnapshot());v33RefreshVisibleRealtimeView();v29RestoreActiveDraft(draft);
+      v35LastAppliedAt=Date.now();remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+      clearTimeout(productionSaveTimer);productionSaveTimer=setTimeout(v32PersistSectionChanges,350);return true;
+    }
     const draft=v29CaptureActiveDraft();applyProductionSnapshot(snapshot);productionRevision=Number(snapshot._revision||remoteRevision);
     v23BaseSnapshot=v23Clone(snapshot);v32SectionBaseline=v32Clone(productionSnapshot());v23PendingRemoteSnapshot=null;
     v26WriteLocalSnapshot(site,productionSnapshot());v33RefreshVisibleRealtimeView();v29RestoreActiveDraft(draft);
