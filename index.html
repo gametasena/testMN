@@ -4172,6 +4172,123 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)v35Reconci
 window.addEventListener('online',()=>v35ReconcileSharedState(true));
 window.addEventListener('DOMContentLoaded',()=>setTimeout(v35StartReconciliation,2500));
 
+/* ===== True cross-device push sync and durable browser sessions v36 ===== */
+const V36_PERSISTENT_SESSION_TOKEN_KEY='smartFactoryPersistentSession_v36';
+let v36RealtimeChannel=null,v36RealtimeSite='',v36RealtimeReady=false,v36RealtimeRestartTimer=null,v36PullTimer=null;
+
+/* A production login previously kept its database token in sessionStorage only.
+   A restored page could therefore look logged in while every central RPC silently
+   stopped. Keep the opaque server token until an explicit logout (the server still
+   remains authoritative and can reject an expired/revoked token). */
+const v36SessionTokenFromThisDevice=sessionStorage.getItem(PROD_SESSION_TOKEN_KEY)||localStorage.getItem(REQUESTED_ADMIN_TOKEN_KEY)||'';
+if(v36SessionTokenFromThisDevice)localStorage.setItem(V36_PERSISTENT_SESSION_TOKEN_KEY,v36SessionTokenFromThisDevice);
+productionToken=function(){return sessionStorage.getItem(PROD_SESSION_TOKEN_KEY)||localStorage.getItem(V36_PERSISTENT_SESSION_TOKEN_KEY)||localStorage.getItem(REQUESTED_ADMIN_TOKEN_KEY)||'';};
+
+const v36BaseFinishProductionLogin=finishProductionLogin;
+finishProductionLogin=async function(user,token){
+  if(token){sessionStorage.setItem(PROD_SESSION_TOKEN_KEY,token);localStorage.setItem(V36_PERSISTENT_SESSION_TOKEN_KEY,token);}
+  await v36BaseFinishProductionLogin(user,token);
+  setTimeout(v36StartRealtimeBroadcast,0);
+};
+
+const v36BaseApplyLoggedInUser=applyLoggedInUser;
+applyLoggedInUser=async function(){
+  const result=await v36BaseApplyLoggedInUser();
+  if(!localStorage.getItem(AUTH_STORAGE_KEY))localStorage.removeItem(V36_PERSISTENT_SESSION_TOKEN_KEY);
+  return result;
+};
+
+const v36BaseLogoutUser=logoutUser;
+logoutUser=async function(){
+  clearTimeout(v36RealtimeRestartTimer);clearTimeout(v36PullTimer);
+  localStorage.removeItem(V36_PERSISTENT_SESSION_TOKEN_KEY);
+  if(v36RealtimeChannel)try{await sharedDbClient()?.removeChannel(v36RealtimeChannel);}catch{}
+  v36RealtimeChannel=null;v36RealtimeReady=false;v36RealtimeSite='';
+  return v36BaseLogoutUser();
+};
+
+function v36ScheduleAuthoritativePull(delay=40){
+  clearTimeout(v36PullTimer);
+  v36PullTimer=setTimeout(async()=>{
+    if(!productionToken())return;
+    try{await v32PollSectionEvents();}catch{}
+    setTimeout(()=>v35ReconcileSharedState(true),80);
+  },delay);
+}
+
+function v36BroadcastChange(revision=productionRevision,kind='state'){
+  if(!v36RealtimeChannel||!v36RealtimeReady)return false;
+  try{
+    void v36RealtimeChannel.send({type:'broadcast',event:'factory_changed',payload:{site:factorySite(),revision:Number(revision||0),kind,origin:SYNC_CLIENT_ID,at:Date.now()}});
+    return true;
+  }catch(error){console.warn('Realtime broadcast failed',error);return false;}
+}
+
+async function v36StartRealtimeBroadcast(){
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();
+  if(!token||!client?.channel)return false;
+  if(v36RealtimeChannel&&v36RealtimeSite===site&&v36RealtimeReady)return true;
+  clearTimeout(v36RealtimeRestartTimer);
+  if(v36RealtimeChannel)try{await client.removeChannel(v36RealtimeChannel);}catch{}
+  v36RealtimeChannel=null;v36RealtimeReady=false;v36RealtimeSite=site;
+  const channel=client.channel(`factory-live-${site}`,{config:{broadcast:{self:false,ack:true}}});
+  v36RealtimeChannel=channel;
+  channel.on('broadcast',{event:'factory_changed'},message=>{
+    const payload=message?.payload||{};
+    if(payload.site&&payload.site!==factorySite())return;
+    if(payload.origin===SYNC_CLIENT_ID)return;
+    v36ScheduleAuthoritativePull(20);
+  });
+  channel.subscribe(status=>{
+    if(channel!==v36RealtimeChannel)return;
+    if(status==='SUBSCRIBED'){
+      v36RealtimeReady=true;
+      if(remoteSyncState==='ready')v23SyncIndicator('online');
+      v36ScheduleAuthoritativePull(20);
+      return;
+    }
+    if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'||status==='CLOSED'){
+      v36RealtimeReady=false;
+      clearTimeout(v36RealtimeRestartTimer);
+      v36RealtimeRestartTimer=setTimeout(v36StartRealtimeBroadcast,1800);
+    }
+  });
+  return true;
+}
+
+/* Publish only after Supabase has confirmed a write. Polling remains as a safety
+   net, while Broadcast makes foreground phones/tablets/computers update at once. */
+const v36BasePersistSectionChanges=v32PersistSectionChanges;
+v32PersistSectionChanges=async function(){
+  const before=Number(productionRevision||0),result=await v36BasePersistSectionChanges();
+  if(Number(productionRevision||0)>before)v36BroadcastChange(productionRevision,'sections');
+  return result;
+};
+const v36BasePersistMachineDelta=v29PersistMachineDelta;
+v29PersistMachineDelta=async function(machine){
+  const before=Number(productionRevision||0),result=await v36BasePersistMachineDelta(machine);
+  if(Number(productionRevision||0)>before)v36BroadcastChange(productionRevision,'machine');
+  return result;
+};
+const v36BasePersistProductionSnapshot=persistProductionSnapshot;
+persistProductionSnapshot=async function(snapshot,retry=true){
+  const before=Number(productionRevision||0),result=await v36BasePersistProductionSnapshot(snapshot,retry);
+  if(Number(productionRevision||0)>before)v36BroadcastChange(productionRevision,'snapshot');
+  return result;
+};
+
+const v36BaseStartRealtimeSync=startRealtimeSync;
+startRealtimeSync=async function(){
+  const result=await v36BaseStartRealtimeSync();
+  await v36StartRealtimeBroadcast();
+  v36ScheduleAuthoritativePull(40);
+  return result;
+};
+window.addEventListener('focus',()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);}});
+window.addEventListener('online',()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);});
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v36StartRealtimeBroadcast();v36ScheduleAuthoritativePull(20);},2800));
+
 </script>
 </body>
 </html>
