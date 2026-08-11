@@ -4073,6 +4073,57 @@ function v33RefreshVisibleRealtimeView(){
   else if(view==='view-repair'){syncMasterDataToDOM?.();populateFormChecklists?.();}
 }
 
+/* ===== Ticket completion and machine status stay together across devices v34 ===== */
+function v34TicketMachine(ticket){
+  if(!ticket)return null;
+  const target=String(ticket.target||'').trim(),targetLower=target.toLowerCase();
+  let machine=(machinesState||[]).find(item=>String(item.number||'').trim().toLowerCase()===targetLower);
+  if(machine)return machine;
+  machine=(machinesState||[]).find(item=>String(item.name||'').trim().toLowerCase()===targetLower);
+  if(machine)return machine;
+  const targetNumbers=target.match(/\d+/g)||[];
+  return(machinesState||[]).find(item=>targetNumbers.includes(String(item.number||'').trim()))||null;
+}
+async function v34ForceSectionSync(){
+  clearTimeout(productionSaveTimer);
+  for(let attempt=0;attempt<4;attempt++){
+    if(!v32SectionSaveBusy){await v32PersistSectionChanges();return true;}
+    await new Promise(resolve=>setTimeout(resolve,120));
+  }
+  queueRemoteSave();return false;
+}
+async function v34PublishTicketMachine(ticket,stage){
+  const machine=v34TicketMachine(ticket);if(!machine)return false;
+  const now=new Date().toISOString();
+  if(stage==='completed'){
+    machine.workflowStage='normal';machine.status='normal';machine.currentRepairStart=null;machine.repairStartedAt=null;
+    machine.closedAt=ticket.completedAt||ticket.inspectorDate||now;machine.lastRepairTicket=ticket.id;
+  }else if(stage==='awaiting_inspection'){
+    machine.workflowStage='closing';machine.status='repairing';machine.currentRepairStart=machine.currentRepairStart||ticket.repairStartedAt||now;
+    machine.lastRepairTicket=ticket.id;
+  }else if(stage==='in_repair'){
+    machine.workflowStage='repairing';machine.status='repairing';machine.currentRepairStart=machine.currentRepairStart||ticket.repairStartedAt||now;
+    machine.repairStartedAt=machine.repairStartedAt||ticket.repairStartedAt||now;machine.lastRepairTicket=ticket.id;
+  }
+  renderDashboardCards?.();v29DeltaSaveUntil=Date.now()+2500;clearTimeout(productionSaveTimer);
+  await v29PersistMachineDelta(machine);return true;
+}
+const v34BaseAcceptTicket=acceptTicket;
+acceptTicket=function(id){
+  const result=v34BaseAcceptTicket(id),ticket=(ticketsState||[]).find(item=>String(item.id)===String(id));
+  void(async()=>{await v34ForceSectionSync();if(ticket)await v34PublishTicketMachine(ticket,'in_repair');})();return result;
+};
+const v34BaseSaveCloseTicket=saveCloseTicketData;
+saveCloseTicketData=function(){
+  const id=document.getElementById('closeTicketId')?.value,result=v34BaseSaveCloseTicket(),ticket=(ticketsState||[]).find(item=>String(item.id)===String(id));
+  void(async()=>{await v34ForceSectionSync();if(ticket)await v34PublishTicketMachine(ticket,'awaiting_inspection');})();return result;
+};
+const v34BaseSaveAssignTicket=saveAssignTicketData;
+saveAssignTicketData=function(){
+  const id=document.getElementById('assignTicketId')?.value,result=v34BaseSaveAssignTicket(),ticket=(ticketsState||[]).find(item=>String(item.id)===String(id));
+  void(async()=>{await v34ForceSectionSync();if(ticket)await v34PublishTicketMachine(ticket,'completed');await v34ForceSectionSync();})();return result;
+};
+
 </script>
 </body>
 </html>
