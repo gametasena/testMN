@@ -3785,6 +3785,67 @@ const v25BaseFinishProductionLogin=finishProductionLogin;
 finishProductionLogin=async function(user,token){await v25BaseFinishProductionLogin(user,token);v25EnsureAccountControls();document.getElementById('v25PkSwitchButton')?.classList.toggle('hidden',!v25IsAdmin());v25PaintPkChoices();};
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{if(!document.getElementById('loginScreen'))v25EnsureAccountControls();},500));
 
+/* ===== Quota-safe local cache; Supabase remains the source of truth v26 ===== */
+function v26CompactLocalSnapshot(snapshot){
+  try{
+    return JSON.parse(JSON.stringify(snapshot,(key,value)=>{
+      if(typeof value==='string'){
+        const text=value.trimStart();
+        if(/^data:(image|video|audio)\//i.test(text)||/^data:application\/pdf[;,]/i.test(text))return '';
+        if(value.length>200000&&/(photo|image|picture|attachment|file|base64|blob)/i.test(key))return '';
+      }
+      return value;
+    }));
+  }catch(error){console.warn('Unable to compact local site cache',error);return null;}
+}
+function v26MinimalLocalSnapshot(snapshot){
+  const keys=['machinesState','technicians','deptList','staffList','inspectorList','PREDEFINED_PROBLEMS','PREDEFINED_ACTIONS','ticketsState','stockCategories','ticketSequence','ticketSequenceUpdatedAt','_revision','_site','_syncOrigin'];
+  const result={};keys.forEach(key=>{if(snapshot&&snapshot[key]!==undefined)result[key]=snapshot[key];});return v26CompactLocalSnapshot(result)||{};
+}
+let v27LastRemoteSignature='';
+function v27SnapshotSignature(snapshot){
+  let json='';try{json=JSON.stringify(snapshot,(key,value)=>['_revision','_syncOrigin','_site'].includes(key)?undefined:value);}catch{return'';}
+  let hash=2166136261;for(let index=0;index<json.length;index++){hash^=json.charCodeAt(index);hash=Math.imul(hash,16777619);}
+  return `${json.length}:${hash>>>0}`;
+}
+function v26StateCacheKeys(){return[APP_STORAGE_KEY,...FACTORY_SITES.map(site=>v24SiteStorageKey(site))];}
+function v26RemoveOversizedStateCaches(keepKey=''){
+  v26StateCacheKeys().forEach(key=>{if(key!==keepKey)try{localStorage.removeItem(key);}catch{}});
+}
+function v26WriteLocalSnapshot(site,snapshot){
+  const key=v24SiteStorageKey(site),compact=v26CompactLocalSnapshot(snapshot);if(!compact)return false;
+  let json=JSON.stringify(compact);if(json.length>1200000)json=JSON.stringify(v26MinimalLocalSnapshot(compact));
+  try{localStorage.setItem(key,json);return true;}
+  catch(error){
+    console.warn('Local site cache is full; keeping the authoritative Supabase copy',error);
+    try{v26RemoveOversizedStateCaches();localStorage.setItem(key,json);return true;}
+    catch(secondError){console.warn('Local cache disabled for this device',secondError);return false;}
+  }
+}
+loadAppState=function(){try{const saved=localStorage.getItem(v24SiteStorageKey());return saved?JSON.parse(saved):null;}catch(error){console.warn('Unable to restore site cache',error);return null;}};
+saveAppState=function(){const state=productionSnapshot();v26WriteLocalSnapshot(factorySite(),state);queueRemoteSave();};
+const v26BaseApplyProductionSnapshot=applyProductionSnapshot;
+applyProductionSnapshot=function(data){v26BaseApplyProductionSnapshot(data);v26WriteLocalSnapshot(factorySite(),data);v27LastRemoteSignature=v27SnapshotSignature(data);};
+persistProductionSnapshot=async function(snapshot,retry=true){
+  const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client||productionSaving||productionApplying)return;
+  const signature=v27SnapshotSignature(snapshot);if(signature&&signature===v27LastRemoteSignature&&productionRevision>0){v26WriteLocalSnapshot(site,snapshot);return;}
+  productionSaving=true;v23SyncIndicator('syncing');clearTimeout(v23RetryTimer);
+  try{
+    const {data,error}=await client.rpc('save_factory_snapshot_site',{p_token:token,p_site:site,p_data:snapshot,p_expected_revision:productionRevision});if(error)throw error;
+    if(data?.conflict&&retry){const remote=data.data||{},merged=v23MergeSnapshot(remote,snapshot);productionRevision=Number(remote._revision||0);v23BaseSnapshot=v23Clone(remote);productionSaving=false;return persistProductionSnapshot(merged,false);}
+    if(data?.conflict){applyProductionSnapshot(data.data);v23BaseSnapshot=v23Clone(data.data);return;}
+    const saved=data?.data;
+    if(saved){productionRevision=Number(saved._revision||productionRevision);v23BaseSnapshot=v23Clone(saved);v26WriteLocalSnapshot(site,saved);v27LastRemoteSignature=v27SnapshotSignature(saved);}
+    else{productionRevision=Number(data?.revision||productionRevision+1);v23BaseSnapshot=v23Clone(snapshot);v26WriteLocalSnapshot(site,snapshot);v27LastRemoteSignature=signature;}
+    v23LastError='';remoteSyncState='ready';v23SyncIndicator('online');
+  }catch(error){
+    const message=String(error?.message||error||'เชื่อมต่อไม่ได้');v23LastError=message;remoteSyncState='disabled';v23SyncIndicator('offline',message);
+    if(!message.includes('เซสชัน')){clearTimeout(v23RetryTimer);v23RetryTimer=setTimeout(()=>{if(productionToken())persistProductionSnapshot(productionSnapshot());},5000);}
+    showFactoryToast?.(`บันทึก ${site.toUpperCase()} ไม่สำเร็จ: ${message}`,'error');
+  }finally{productionSaving=false;}
+};
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>v26WriteLocalSnapshot(factorySite(),productionSnapshot()),1800));
+
 </script>
 </body>
 </html>
