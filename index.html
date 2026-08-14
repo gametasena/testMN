@@ -4256,6 +4256,12 @@ async function v36StartRealtimeBroadcast(){
     if(payload.origin===SYNC_CLIENT_ID)return;
     v41ReceiveTicketDelta?.(payload.delta,Number(payload.revision||0));
   });
+  channel.on('broadcast',{event:'factory_menu'},message=>{
+    const payload=message?.payload||{};
+    if(payload.site&&payload.site!==factorySite())return;
+    if(payload.origin===SYNC_CLIENT_ID)return;
+    v42ReceiveMenuDelta?.(payload.delta,Number(payload.revision||0));
+  });
   channel.subscribe(status=>{
     if(channel!==v36RealtimeChannel)return;
     if(status==='SUBSCRIBED'){
@@ -4658,6 +4664,93 @@ v32PersistSectionChanges=async function(){
 window.addEventListener('focus',()=>void v41SendTicketDeltas());
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void v41SendTicketDeltas();});
 window.addEventListener('online',()=>void v41SendTicketDeltas());
+
+/* ===== Dedicated realtime streams for stock, repair history, PM and reports v42 ===== */
+let v42MenuQueue=[],v42MenuSending=false,v42MenuRetryTimer=null,v42LastMenuRevision=0;
+const V42_MEDIA_FIELDS=new Set(['photo','image','picture','attachment','file','base64','blob','reporterPhoto','repairerPhoto']);
+
+function v42CompactRow(row){
+  if(!row||typeof row!=='object')return row;
+  const copy=v32Clone(row);Object.keys(copy).forEach(key=>{if(V42_MEDIA_FIELDS.has(key)||(/(photo|image|picture|attachment|base64|blob)/i.test(key)&&typeof copy[key]==='string'&&copy[key].length>2000))delete copy[key];});return copy;
+}
+function v42MenuRowKey(kind,row){
+  if(!row)return'';
+  for(const key of['_serverId','id'])if(row[key]!==undefined&&row[key]!==null&&String(row[key]))return String(row[key]);
+  if(kind==='repair')return[String(row.ticketId||''),String(row.date||''),String(row.machine||''),String(row.start||''),String(row.tech||''),String(row.reporter||''),String(row.problem||'')].join('|');
+  if(kind==='spare')return[String(row.machine||''),String(row.partCode||''),String(row.partName||''),String(row.lastDate||'')].join('|');
+  if(kind==='pmHistory')return[String(row.machine||''),String(row.partCode||''),String(row.partName||''),String(row.actualDate||row.completedAt||'')].join('|');
+  return v32Json(row);
+}
+function v42DiffRows(before,after,kind){
+  const oldRows=Array.isArray(before)?before:[],newRows=Array.isArray(after)?after:[],oldMap=new Map(oldRows.map(row=>[v42MenuRowKey(kind,row),row])),newMap=new Map(newRows.map(row=>[v42MenuRowKey(kind,row),row]));
+  const upsert=newRows.filter(row=>v32Json(oldMap.get(v42MenuRowKey(kind,row))||null)!==v32Json(row)).map(row=>({key:v42MenuRowKey(kind,row),row:v42CompactRow(row)}));
+  const remove=oldRows.filter(row=>!newMap.has(v42MenuRowKey(kind,row))).map(row=>v42MenuRowKey(kind,row));
+  return upsert.length||remove.length?{kind,upsert,remove,order:newRows.map(row=>v42MenuRowKey(kind,row))}:null;
+}
+function v42DiffMasterParts(before,after){
+  const oldObject=before&&typeof before==='object'&&!Array.isArray(before)?before:{},newObject=after&&typeof after==='object'&&!Array.isArray(after)?after:{},set={},remove=[];
+  for(const machine of new Set([...Object.keys(oldObject),...Object.keys(newObject)])){
+    if(!(machine in newObject)){remove.push(machine);continue;}
+    const rows=v42DiffRows(oldObject[machine],newObject[machine],'masterPart');if(rows)set[machine]=rows;
+  }
+  return Object.keys(set).length||remove.length?{set,remove}:null;
+}
+function v42BuildMenuDelta(previous,current){
+  const delta={stock:{},repair:{},pm:{}};
+  const categories=v42DiffRows(previous?.stockCategories,current?.stockCategories,'stockCategory');if(categories)delta.stock.categories=categories;
+  const items=v42DiffRows(previous?.stockItems,current?.stockItems,'stockItem');if(items)delta.stock.items=items;
+  const withdrawals=v42DiffRows(previous?.stockWithdrawals,current?.stockWithdrawals,'stockWithdrawal');if(withdrawals)delta.stock.withdrawals=withdrawals;
+  const history=v42DiffRows(previous?.historyDataLog,current?.historyDataLog,'repair');if(history)delta.repair.history=history;
+  const spare=v42DiffRows(previous?.sparePartsLog,current?.sparePartsLog,'spare');if(spare)delta.pm.spare=spare;
+  const pmHistory=v42DiffRows(previous?.pmHistoryLog,current?.pmHistoryLog,'pmHistory');if(pmHistory)delta.pm.history=pmHistory;
+  const master=v42DiffMasterParts(previous?.machineMasterPartsState,current?.machineMasterPartsState);if(master)delta.pm.master=master;
+  if(!Object.keys(delta.stock).length)delete delta.stock;if(!Object.keys(delta.repair).length)delete delta.repair;if(!Object.keys(delta.pm).length)delete delta.pm;
+  return Object.keys(delta).length?delta:null;
+}
+function v42MergeRows(local,operation){
+  const rows=Array.isArray(local)?local:[],kind=operation?.kind||'',map=new Map(rows.map(row=>[v42MenuRowKey(kind,row),row]));
+  (operation?.remove||[]).forEach(key=>map.delete(String(key)));
+  (operation?.upsert||[]).forEach(entry=>{const key=String(entry?.key||v42MenuRowKey(kind,entry?.row)),incoming=entry?.row;if(!incoming)return;const existing=map.get(key);map.set(key,existing&&typeof existing==='object'?{...existing,...v32Clone(incoming)}:v32Clone(incoming));});
+  const ordered=[],used=new Set();(operation?.order||[]).forEach(key=>{const text=String(key);if(map.has(text)&&!used.has(text)){ordered.push(map.get(text));used.add(text);}});map.forEach((row,key)=>{if(!used.has(key))ordered.push(row);});return ordered;
+}
+function v42MergeMasterParts(local,operation){
+  const result={...(local&&typeof local==='object'&&!Array.isArray(local)?local:{})};(operation?.remove||[]).forEach(machine=>delete result[machine]);Object.entries(operation?.set||{}).forEach(([machine,rows])=>{result[machine]=v42MergeRows(result[machine],rows);});return result;
+}
+function v42MenuLabels(delta){
+  const labels=[];if(delta?.stock)labels.push('สต็อกอะไหล่');if(delta?.repair)labels.push('ประวัติการซ่อม');if(delta?.pm)labels.push('ประวัติอะไหล่/PM');return labels;
+}
+function v42ReceiveMenuDelta(delta,revision=0){
+  if(!delta||Number(revision||0)<v42LastMenuRevision)return false;v42LastMenuRevision=Math.max(v42LastMenuRevision,Number(revision||0));
+  const set={};
+  if(delta.stock?.categories)set.stockCategories=v42MergeRows(v10StockCategories,delta.stock.categories);
+  if(delta.stock?.items)set.stockItems=v42MergeRows(v10StockItems,delta.stock.items);
+  if(delta.stock?.withdrawals)set.stockWithdrawals=v42MergeRows(v10StockWithdrawals,delta.stock.withdrawals);
+  if(delta.repair?.history)set.historyDataLog=v42MergeRows(historyDataLog,delta.repair.history);
+  if(delta.pm?.spare)set.sparePartsLog=v42MergeRows(sparePartsLog,delta.pm.spare);
+  if(delta.pm?.history)set.pmHistoryLog=v42MergeRows(pmHistoryLog,delta.pm.history);
+  if(delta.pm?.master)set.machineMasterPartsState=v42MergeMasterParts(machineMasterPartsState,delta.pm.master);
+  if(!Object.keys(set).length)return false;
+  const draft=v40CaptureFormDrafts?.();v32ApplyRemotePatch({set},Math.max(Number(revision||0),Number(productionRevision||0)));if(draft)v40RestoreFormDrafts?.(draft);
+  v10RenderStock?.();renderHistoryTable?.();renderGlobalPMDashboard?.();renderPMEntryRows?.();renderMachinePMHistory?.();updateStatisticsReports?.();updatePmMenuAlert?.();
+  v23BaseSnapshot=v23Clone(productionSnapshot());v26WriteLocalSnapshot(factorySite(),productionSnapshot());remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
+  const labels=v42MenuLabels(delta);showFactoryToast?.(`${labels.join(' · ')} อัปเดตแบบเรียลไทม์แล้ว`,'success');return true;
+}
+function v42QueueMenuDelta(delta,revision){if(!delta)return;v42MenuQueue.push({site:factorySite(),delta:v32Clone(delta),revision:Number(revision||0)});void v42SendMenuDeltas();}
+async function v42SendMenuDeltas(){
+  if(v42MenuSending||!v42MenuQueue.length)return;clearTimeout(v42MenuRetryTimer);v42MenuSending=true;
+  try{
+    await v36StartRealtimeBroadcast();if(!v36RealtimeChannel||!v36RealtimeReady)throw new Error('realtime-not-ready');
+    while(v42MenuQueue.length){const item=v42MenuQueue[0];if(item.site!==factorySite()){v42MenuQueue.shift();continue;}const status=await v36RealtimeChannel.send({type:'broadcast',event:'factory_menu',payload:{site:item.site,revision:item.revision,origin:SYNC_CLIENT_ID,delta:item.delta,at:Date.now()}});if(status!=='ok'&&status!==undefined)throw new Error(String(status));v42MenuQueue.shift();}
+  }catch(error){if(String(error?.message||error)!=='realtime-not-ready')console.warn('Menu realtime stream failed; retrying',error);v42MenuRetryTimer=setTimeout(v42SendMenuDeltas,500);}finally{v42MenuSending=false;}
+}
+const v42BasePersistSections=v32PersistSectionChanges;
+v32PersistSectionChanges=async function(){
+  const previous=v32SectionBaseline?v32Clone(v32SectionBaseline):null,current=productionSnapshot(),delta=previous?v42BuildMenuDelta(previous,current):null,before=Number(productionRevision||0),result=await v42BasePersistSections();
+  if(Number(productionRevision||0)>before&&delta)v42QueueMenuDelta(delta,productionRevision);return result;
+};
+window.addEventListener('focus',()=>void v42SendMenuDeltas());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void v42SendMenuDeltas();});
+window.addEventListener('online',()=>void v42SendMenuDeltas());
 
 </script>
 </body>
