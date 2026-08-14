@@ -4250,6 +4250,12 @@ async function v36StartRealtimeBroadcast(){
     if(payload.origin===SYNC_CLIENT_ID)return;
     v40ReceiveCentralPatch?.(payload.patch,Number(payload.revision||0),payload.kind||'state');
   });
+  channel.on('broadcast',{event:'factory_ticket'},message=>{
+    const payload=message?.payload||{};
+    if(payload.site&&payload.site!==factorySite())return;
+    if(payload.origin===SYNC_CLIENT_ID)return;
+    v41ReceiveTicketDelta?.(payload.delta,Number(payload.revision||0));
+  });
   channel.subscribe(status=>{
     if(channel!==v36RealtimeChannel)return;
     if(status==='SUBSCRIBED'){
@@ -4584,6 +4590,74 @@ markAsWaitingForParts=function(){const id=document.getElementById('closeTicketId
 window.addEventListener('focus',()=>{void v40SendCentralPatches();v38ScheduleCentralPull(0,'focus');});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){void v40SendCentralPatches();v38ScheduleCentralPull(0,'visible');}});
 window.addEventListener('online',()=>{void v40SendCentralPatches();v38ScheduleCentralPull(0,'online');});
+
+/* ===== Dedicated lightweight ticket stream for technician screens v41 ===== */
+let v41TicketQueue=[],v41TicketSending=false,v41TicketRetryTimer=null;
+function v41TicketKey(ticket){return String(ticket?._serverId||ticket?.id||'');}
+function v41ActivityKey(log){return String(log?.id||`${log?.ticketId||''}|${log?.at||''}|${log?.stage||''}`);}
+function v41CompactTicket(ticket){if(!ticket)return null;const copy=v32Clone(ticket);delete copy.reporterPhoto;delete copy.repairerPhoto;return copy;}
+
+function v41BuildTicketDelta(previous,current){
+  const before=Array.isArray(previous?.ticketsState)?previous.ticketsState:[],after=Array.isArray(current?.ticketsState)?current.ticketsState:[];
+  const oldMap=new Map(before.map(ticket=>[v41TicketKey(ticket),ticket])),newMap=new Map(after.map(ticket=>[v41TicketKey(ticket),ticket]));
+  const upsert=after.filter(ticket=>JSON.stringify(oldMap.get(v41TicketKey(ticket))||null)!==JSON.stringify(ticket)).map(v41CompactTicket);
+  const remove=before.filter(ticket=>!newMap.has(v41TicketKey(ticket))).map(ticket=>({key:v41TicketKey(ticket),id:String(ticket?.id||'')}));
+  const changedIds=new Set([...upsert.map(ticket=>String(ticket?.id||'')),...remove.map(ticket=>ticket.id)]);
+  const activities=(Array.isArray(current?._ticketActivityLog)?current._ticketActivityLog:[]).filter(log=>changedIds.has(String(log?.ticketId||''))).slice(0,80).map(v32Clone);
+  return upsert.length||remove.length?{upsert,remove,activities}:null;
+}
+
+function v41QueueTicketDelta(delta,revision){
+  if(!delta)return;v41TicketQueue.push({site:factorySite(),delta:v32Clone(delta),revision:Number(revision||0)});void v41SendTicketDeltas();
+}
+
+async function v41SendTicketDeltas(){
+  if(v41TicketSending||!v41TicketQueue.length)return;
+  clearTimeout(v41TicketRetryTimer);v41TicketSending=true;
+  try{
+    await v36StartRealtimeBroadcast();
+    if(!v36RealtimeChannel||!v36RealtimeReady)throw new Error('realtime-not-ready');
+    while(v41TicketQueue.length){
+      const item=v41TicketQueue[0];
+      if(item.site!==factorySite()){v41TicketQueue.shift();continue;}
+      const status=await v36RealtimeChannel.send({type:'broadcast',event:'factory_ticket',payload:{site:item.site,revision:item.revision,origin:SYNC_CLIENT_ID,delta:item.delta,at:Date.now()}});
+      if(status!=='ok'&&status!==undefined)throw new Error(String(status));
+      v41TicketQueue.shift();
+    }
+  }catch(error){
+    if(String(error?.message||error)!=='realtime-not-ready')console.warn('Ticket realtime stream failed; retrying',error);
+    v41TicketRetryTimer=setTimeout(v41SendTicketDeltas,500);
+  }finally{v41TicketSending=false;}
+}
+
+function v41ReceiveTicketDelta(delta,revision=0){
+  if(!delta)return false;
+  const tickets=[...(ticketsState||[])],removes=Array.isArray(delta.remove)?delta.remove:[];
+  removes.forEach(remove=>{for(let index=tickets.length-1;index>=0;index--){const ticket=tickets[index];if(v41TicketKey(ticket)===String(remove.key||'')||String(ticket?.id||'')===String(remove.id||''))tickets.splice(index,1);}});
+  (Array.isArray(delta.upsert)?delta.upsert:[]).forEach(incoming=>{
+    let index=tickets.findIndex(ticket=>v41TicketKey(ticket)===v41TicketKey(incoming));if(index<0)index=tickets.findIndex(ticket=>String(ticket?.id||'')===String(incoming?.id||''));
+    if(index<0)tickets.push(incoming);else{const local=tickets[index],localAt=String(local?.updatedAt||local?.createdAt||''),remoteAt=String(incoming?.updatedAt||incoming?.createdAt||'');if(!localAt||!remoteAt||remoteAt>=localAt)tickets[index]={...local,...incoming};}
+  });
+  const activityMap=new Map((ticketActivityLog||[]).map(log=>[v41ActivityKey(log),log]));
+  (Array.isArray(delta.activities)?delta.activities:[]).forEach(log=>activityMap.set(v41ActivityKey(log),log));
+  const activities=[...activityMap.values()].sort((a,b)=>String(b?.at||'').localeCompare(String(a?.at||'')));
+  v32ApplyRemotePatch({set:{ticketsState:tickets,_ticketActivityLog:activities}},Math.max(Number(revision||0),Number(productionRevision||0)));
+  renderTechTab?.();renderInspectorTab?.();renderTicketHistoryTab?.();updateTicketWorkflowUI?.();updateTabBadges?.();updateDashboardTicketAlert?.();updateTicketMenuBadges?.();
+  v23SyncIndicator('online');showFactoryToast?.(`ใบแจ้งซ่อม ${factorySite().toUpperCase()} อัปเดตสำหรับผู้ซ่อมแล้ว`,'success');
+  return true;
+}
+
+const v41BasePersistSections=v32PersistSectionChanges;
+v32PersistSectionChanges=async function(){
+  const previous=v32SectionBaseline?v32Clone(v32SectionBaseline):null,current=productionSnapshot(),delta=previous?v41BuildTicketDelta(previous,current):null,before=Number(productionRevision||0);
+  const result=await v41BasePersistSections();
+  if(Number(productionRevision||0)>before&&delta)v41QueueTicketDelta(delta,productionRevision);
+  return result;
+};
+
+window.addEventListener('focus',()=>void v41SendTicketDeltas());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void v41SendTicketDeltas();});
+window.addEventListener('online',()=>void v41SendTicketDeltas());
 
 </script>
 </body>
