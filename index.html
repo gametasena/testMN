@@ -3269,7 +3269,7 @@ function v11CurrentUsername(){try{return String(JSON.parse(localStorage.getItem(
 function v11MuteKey(){return`smartFactorySoundMuted_v11_${v11CurrentUsername()}`;}
 function v11SoundMuted(){return localStorage.getItem(v11MuteKey())==='1';}
 function v11ToggleSound(){localStorage.setItem(v11MuteKey(),v11SoundMuted()?'0':'1');if(v11SoundMuted()){window.speechSynthesis?.cancel?.();try{v8VoiceAudio?.pause?.();}catch{}}v11RefreshSoundButtons();showFactoryToast?.(v11SoundMuted()?'ปิดเสียงแจ้งเตือนสำหรับบัญชีนี้แล้ว':'เปิดเสียงแจ้งเตือนสำหรับบัญชีนี้แล้ว','success');}
-function v11RefreshSoundButtons(){document.querySelectorAll('[data-v11-sound]').forEach(button=>{button.innerHTML=v11SoundMuted()?'<i class="fa-solid fa-volume-xmark"></i><span>ปิดเสียง</span>':'<i class="fa-solid fa-volume-high"></i><span>เปิดเสียง</span>';button.classList.toggle('bg-red-600',v11SoundMuted());button.classList.toggle('bg-sky-600',!v11SoundMuted());button.style.backgroundColor=v11SoundMuted()?'#dc2626':'#0284c7';button.style.color='#fff';button.style.opacity='1';button.title=v11SoundMuted()?'ขณะนี้ปิดเสียงอยู่ — กดเพื่อเปิดเสียง':'ขณะนี้เปิดเสียงอยู่ — กดเพื่อปิดเสียง';});const setting=document.getElementById('v11AccountSoundEnabled');if(setting)setting.checked=!v11SoundMuted();}
+function v11RefreshSoundButtons(){document.querySelectorAll('[data-v11-sound]').forEach(button=>{button.innerHTML=v11SoundMuted()?'<i class="fa-solid fa-volume-xmark"></i><span>เปิดเสียง</span>':'<i class="fa-solid fa-volume-high"></i><span>ปิดเสียง</span>';button.classList.toggle('bg-red-600',v11SoundMuted());button.classList.toggle('bg-sky-600',!v11SoundMuted());button.style.backgroundColor=v11SoundMuted()?'#dc2626':'#0284c7';button.style.color='#fff';button.style.opacity='1';button.title=v11SoundMuted()?'ขณะนี้ปิดเสียงอยู่ — กดเพื่อเปิดเสียง':'ขณะนี้เปิดเสียงอยู่ — กดเพื่อปิดเสียง';button.setAttribute('aria-label',button.title);});const setting=document.getElementById('v11AccountSoundEnabled');if(setting)setting.checked=!v11SoundMuted();}
 const v11BaseSpeakFactoryAlert=speakFactoryAlert;
 speakFactoryAlert=function(text,title='SMART FACTORY'){if(v11SoundMuted())return;return v11BaseSpeakFactoryAlert(text,title);};
 function v11EnsureDashboardTools(){const exportButton=[...document.querySelectorAll('header button, header a, #mainContent button')].find(node=>node.textContent.includes('Export Excel'));if(exportButton&&!document.getElementById('v11MobileDashboardTools'))exportButton.insertAdjacentHTML('afterend','<div id="v11MobileDashboardTools" class="hidden w-full gap-2"><button type="button" onclick="v7ToggleDashboardTools(event)" class="flex flex-1 items-center justify-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-bold text-white"><i class="fa-solid fa-gear"></i><span>ตั้งค่า</span></button><button data-v11-sound type="button" onclick="v11ToggleSound()" class="flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-white"></button></div>');const gear=document.getElementById('v7DashboardGear');if(gear&&!document.getElementById('v11DesktopSoundButton'))gear.insertAdjacentHTML('beforebegin','<button id="v11DesktopSoundButton" data-v11-sound type="button" onclick="v11ToggleSound()" class="flex h-12 items-center gap-2 rounded-full px-4 text-sm font-bold text-white shadow-lg"><i class="fa-solid fa-volume-high"></i><span>ปิดเสียง</span></button>');const alertPanel=document.getElementById('factoryAlertSettings');if(alertPanel&&!document.getElementById('v11AccountSoundEnabled'))alertPanel.querySelector('.mt-4.grid')?.insertAdjacentHTML('afterbegin','<label class="flex items-center gap-2 text-sm font-semibold"><input id="v11AccountSoundEnabled" type="checkbox" onchange="if(this.checked===v11SoundMuted())v11ToggleSound()"> เปิดเสียงทั้งหมดสำหรับบัญชีนี้</label>');v11RefreshSoundButtons();}
@@ -4239,6 +4239,12 @@ async function v36StartRealtimeBroadcast(){
     if(payload.origin===SYNC_CLIENT_ID)return;
     v38ScheduleCentralPull(Number(payload.revision||0),payload.kind||'state');
   });
+  channel.on('broadcast',{event:'factory_alert'},message=>{
+    const payload=message?.payload||{};
+    if(payload.site&&payload.site!==factorySite())return;
+    if(payload.origin===SYNC_CLIENT_ID)return;
+    v39ReceiveFactoryAlert?.(payload.event,Number(payload.revision||0));
+  });
   channel.subscribe(status=>{
     if(channel!==v36RealtimeChannel)return;
     if(status==='SUBSCRIBED'){
@@ -4311,7 +4317,10 @@ function v38ScheduleCentralPull(targetRevision=0,kind='state'){
     try{
       await v32PollSectionEvents();
       await v30PollMachineEvents?.();
-      if(Number(targetRevision||0)>Number(productionRevision||0))await v35ReconcileSharedState(true);
+      /* A revision may already have advanced through a machine event while another
+         menu patch is still missing. Always pull the authoritative PK snapshot
+         after a save broadcast so every menu converges, not only the dashboard. */
+      await v35ReconcileSharedState(true);
       v38RefreshSharedMenu();
       const current=Number(productionRevision||0);
       if(current>before&&current>v38LastNoticeRevision){
@@ -4355,6 +4364,85 @@ queueRemoteSave=function(){
 window.addEventListener('focus',()=>v38ScheduleCentralPull(0,'focus'));
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)v38ScheduleCentralPull(0,'visible');});
 window.addEventListener('online',()=>v38ScheduleCentralPull(0,'online'));
+
+/* ===== Confirmed central alerts and all-menu convergence v39 ===== */
+let v39AlertSite='',v39AlertRetryTimer=null;
+const v39LocalAlertIds=new Set(),v39SentAlertIds=new Set();
+
+function v39AlertMessage(event){
+  const sound=factoryAlertSettings(),data=event?.data||{};
+  const messages={broken:sound.broken,repairing:sound.repairing,completed:sound.completed,ticket:sound.ticket,inspection:sound.inspection,unaccepted:v6OperationSettings.unacceptedMessage,unfinished:v6OperationSettings.unfinishedMessage};
+  const titles={broken:'แจ้งเครื่องเสีย',repairing:'ช่างกำลังซ่อม',completed:'ซ่อมเสร็จแล้ว',ticket:'ใบแจ้งซ่อมใหม่',inspection:'มีใบงานรอตรวจสอบ',unaccepted:'ช่างยังไม่รับงาน',unfinished:'เครื่องยังซ่อมไม่เสร็จ'};
+  return messages[event?.type]?{text:factoryFormatAlert(messages[event.type],data),title:titles[event.type]}:null;
+}
+
+function v39SpeakFactoryEvent(event){
+  const message=v39AlertMessage(event);
+  if(!message||!claimFactoryAlertEvent(event?.id))return false;
+  speakFactoryAlert(message.text,message.title);
+  return true;
+}
+
+function v39ResetAlertSite(){
+  const site=factorySite();if(site===v39AlertSite)return;
+  v39AlertSite=site;v39LocalAlertIds.clear();v39SentAlertIds.clear();
+  factoryAlertBaseline=v32Clone(productionSnapshot());
+}
+
+const v39BaseRecordFactoryAlert=recordFactoryAlert;
+recordFactoryAlert=function(type,data={}){
+  v39ResetAlertSite();const before=new Set((factoryAlertEvents||[]).map(event=>String(event?.id||'')));
+  const result=v39BaseRecordFactoryAlert(type,data);
+  const event=[...(factoryAlertEvents||[])].reverse().find(item=>item?.id&&!before.has(String(item.id)));
+  if(event){event.origin=SYNC_CLIENT_ID;event.site=factorySite();v39LocalAlertIds.add(String(event.id));v39SpeakFactoryEvent(event);}
+  return result;
+};
+
+processFactoryRealtimeAlerts=function(previous,next){
+  if(!previous||!next)return;const known=new Set((previous.factoryAlertEvents||[]).map(event=>String(event?.id||'')));
+  for(const event of(next.factoryAlertEvents||[]))if(event?.id&&!known.has(String(event.id)))v39SpeakFactoryEvent(event);
+};
+
+async function v39BroadcastPendingAlerts(revision=productionRevision){
+  v39ResetAlertSite();clearTimeout(v39AlertRetryTimer);
+  if(!v39LocalAlertIds.size)return;
+  await v36StartRealtimeBroadcast();
+  if(!v36RealtimeChannel||!v36RealtimeReady){v39AlertRetryTimer=setTimeout(()=>v39BroadcastPendingAlerts(revision),1400);return;}
+  for(const id of[...v39LocalAlertIds]){
+    if(v39SentAlertIds.has(id)){v39LocalAlertIds.delete(id);continue;}
+    const event=(factoryAlertEvents||[]).find(item=>String(item?.id)===id);if(!event){v39LocalAlertIds.delete(id);continue;}
+    try{
+      const status=await v36RealtimeChannel.send({type:'broadcast',event:'factory_alert',payload:{site:factorySite(),revision:Number(revision||0),origin:SYNC_CLIENT_ID,event}});
+      if(status==='ok'||status===undefined){v39SentAlertIds.add(id);v39LocalAlertIds.delete(id);}
+    }catch(error){console.warn('Central alert broadcast failed',error);}
+  }
+  if(v39LocalAlertIds.size)v39AlertRetryTimer=setTimeout(()=>v39BroadcastPendingAlerts(revision),1800);
+}
+
+function v39ReceiveFactoryAlert(event,revision=0){
+  if(!event?.id)return;v39SpeakFactoryEvent(event);v38ScheduleCentralPull(revision,'alert');
+  updateDashboardTicketAlert?.();updateTicketWorkflowUI?.();updateTicketMenuBadges?.();updateTabBadges?.();
+}
+
+/* Replace the legacy alert subscription which still filtered the obsolete `main`
+   row. PK1/PK2/PK3 now share the same authenticated Realtime channel as data. */
+startFactoryAlertRealtime=async function(){
+  v39ResetAlertSite();factoryAlertBaseline=v32Clone(productionSnapshot());
+  if(factoryAlertChannel&&factoryAlertChannel!==v36RealtimeChannel){try{await sharedDbClient()?.removeChannel?.(factoryAlertChannel);}catch{}}
+  factoryAlertChannel=null;return v36StartRealtimeBroadcast();
+};
+
+const v39BasePersistSections=v32PersistSectionChanges;
+v32PersistSectionChanges=async function(){const before=Number(productionRevision||0),result=await v39BasePersistSections();if(Number(productionRevision||0)>before)void v39BroadcastPendingAlerts(productionRevision);return result;};
+const v39BasePersistMachine=v29PersistMachineDelta;
+v29PersistMachineDelta=async function(machine){const before=Number(productionRevision||0),result=await v39BasePersistMachine(machine);if(Number(productionRevision||0)>before)void v39BroadcastPendingAlerts(productionRevision);return result;};
+const v39BasePersistSnapshot=persistProductionSnapshot;
+persistProductionSnapshot=async function(snapshot,retry=true){const before=Number(productionRevision||0),result=await v39BasePersistSnapshot(snapshot,retry);if(Number(productionRevision||0)>before)void v39BroadcastPendingAlerts(productionRevision);return result;};
+
+window.addEventListener('focus',()=>{v39ResetAlertSite();v36StartRealtimeBroadcast();v38ScheduleCentralPull(0,'focus');});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){v39ResetAlertSite();v36StartRealtimeBroadcast();v38ScheduleCentralPull(0,'visible');}});
+window.addEventListener('online',()=>{v36StartRealtimeBroadcast();v38ScheduleCentralPull(0,'online');void v39BroadcastPendingAlerts();});
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v39ResetAlertSite();startFactoryAlertRealtime();v38ScheduleCentralPull(0,'startup');},3000));
 
 </script>
 </body>
