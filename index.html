@@ -3861,8 +3861,7 @@ loadProductionSnapshot=async function(silent=false){
     if(remoteRevision!==productionRevision){
       const snapshotResult=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(snapshotResult.error)throw snapshotResult.error;
       const snapshot=snapshotResult.data;
-      if(v23Editing()){v23PendingRemoteSnapshot=snapshot;productionRevision=Number(snapshot?._revision||remoteRevision);}
-      else{applyProductionSnapshot(snapshot);v23BaseSnapshot=v23Clone(snapshot);v23PendingRemoteSnapshot=null;productionRevision=Number(snapshot?._revision||remoteRevision);}
+      applyProductionSnapshot(snapshot);v23BaseSnapshot=v23Clone(snapshot);v23PendingRemoteSnapshot=null;productionRevision=Number(snapshot?._revision||remoteRevision);
     }
     remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');
   }catch(error){
@@ -4127,7 +4126,7 @@ saveAssignTicketData=function(){
 /* ===== Authoritative recovery when a sleeping/background device misses an event v35 ===== */
 let v35ReconcileBusy=false,v35ReconcileTimer=null,v35LastAppliedAt=0;
 async function v35ReconcileSharedState(force=false){
-  if(v35ReconcileBusy||productionSaving||productionApplying||v32SectionSaveBusy||v23Editing())return false;
+  if(v35ReconcileBusy||productionSaving||productionApplying||v32SectionSaveBusy)return false;
   const token=productionToken(),client=sharedDbClient(),site=factorySite();if(!token||!client)return false;
   const localPatch=v32SectionBaseline?v32BuildPatch(v32SectionBaseline,productionSnapshot()):null;
   const hasLocalChanges=!v32PatchIsEmpty(localPatch);
@@ -4137,7 +4136,7 @@ async function v35ReconcileSharedState(force=false){
     const remoteRevision=Number(revisionResult.data?.revision||0);
     if(!force&&remoteRevision===Number(productionRevision||0))return true;
     const snapshotResult=await client.rpc('get_factory_bootstrap_site',{p_token:token,p_site:site});if(snapshotResult.error)throw snapshotResult.error;
-    if(productionSaving||productionApplying||v32SectionSaveBusy||v23Editing())return false;
+    if(productionSaving||productionApplying||v32SectionSaveBusy)return false;
     const snapshot=snapshotResult.data;if(!snapshot)return false;
     if(hasLocalChanges){
       const local=productionSnapshot(),dirtyKeys=new Set([
@@ -4244,6 +4243,12 @@ async function v36StartRealtimeBroadcast(){
     if(payload.site&&payload.site!==factorySite())return;
     if(payload.origin===SYNC_CLIENT_ID)return;
     v39ReceiveFactoryAlert?.(payload.event,Number(payload.revision||0));
+  });
+  channel.on('broadcast',{event:'factory_patch'},message=>{
+    const payload=message?.payload||{};
+    if(payload.site&&payload.site!==factorySite())return;
+    if(payload.origin===SYNC_CLIENT_ID)return;
+    v40ReceiveCentralPatch?.(payload.patch,Number(payload.revision||0),payload.kind||'state');
   });
   channel.subscribe(status=>{
     if(channel!==v36RealtimeChannel)return;
@@ -4443,6 +4448,142 @@ window.addEventListener('focus',()=>{v39ResetAlertSite();v36StartRealtimeBroadca
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){v39ResetAlertSite();v36StartRealtimeBroadcast();v38ScheduleCentralPull(0,'visible');}});
 window.addEventListener('online',()=>{v36StartRealtimeBroadcast();v38ScheduleCentralPull(0,'online');void v39BroadcastPendingAlerts();});
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{v39ResetAlertSite();startFactoryAlertRealtime();v38ScheduleCentralPull(0,'startup');},3000));
+
+/* ===== Immediate confirmed patches and non-blocking ticket workflow v40 ===== */
+let v40PatchQueue=[],v40PatchSending=false,v40PatchRetryTimer=null,v40TicketSubmitBusy=false;
+
+function v40CaptureFormDrafts(){
+  const active=document.activeElement,rows=[];
+  document.querySelectorAll('input,textarea,select').forEach((field,index)=>{
+    const type=String(field.type||'').toLowerCase();
+    if(['file','button','submit','reset','hidden'].includes(type)||field.disabled)return;
+    if(!field.id&&!field.name)return;
+    rows.push({id:field.id||'',name:field.name||'',index,type,value:field.value,checked:field.checked});
+  });
+  return{rows,activeId:active?.id||'',activeName:active?.name||'',start:active?.selectionStart,end:active?.selectionEnd};
+}
+
+function v40RestoreFormDrafts(draft){
+  if(!draft?.rows)return;
+  draft.rows.forEach(item=>{
+    let field=item.id?document.getElementById(item.id):null;
+    if(!field&&item.name){const matches=[...document.querySelectorAll(`[name="${CSS.escape(item.name)}"]`)];field=matches.find(node=>String(node.type||'').toLowerCase()===item.type)||matches[0];}
+    if(!field||String(field.type||'').toLowerCase()==='file')return;
+    if(['checkbox','radio'].includes(item.type))field.checked=item.checked;else field.value=item.value;
+  });
+  const active=draft.activeId?document.getElementById(draft.activeId):(draft.activeName?document.querySelector(`[name="${CSS.escape(draft.activeName)}"]`):null);
+  if(active)try{active.focus({preventScroll:true});if(Number.isInteger(draft.start)&&active.setSelectionRange)active.setSelectionRange(draft.start,draft.end);}catch{}
+}
+
+const v40BaseApplyProductionSnapshot=applyProductionSnapshot;
+applyProductionSnapshot=function(data){const draft=v40CaptureFormDrafts();const result=v40BaseApplyProductionSnapshot(data);v40RestoreFormDrafts(draft);return result;};
+
+function v40QueueCentralPatch(patch,revision,kind='state'){
+  if(v32PatchIsEmpty(patch))return;
+  let size=0;try{size=JSON.stringify(patch).length;}catch{}
+  if(size>650000){v36BroadcastChange(revision,kind);return;}
+  v40PatchQueue.push({patch:v32Clone(patch),revision:Number(revision||0),kind,site:factorySite()});
+  void v40SendCentralPatches();
+}
+
+async function v40SendCentralPatches(){
+  if(v40PatchSending||!v40PatchQueue.length)return;
+  clearTimeout(v40PatchRetryTimer);v40PatchSending=true;
+  try{
+    await v36StartRealtimeBroadcast();
+    if(!v36RealtimeChannel||!v36RealtimeReady)throw new Error('realtime-not-ready');
+    while(v40PatchQueue.length){
+      const item=v40PatchQueue[0];
+      if(item.site!==factorySite()){v40PatchQueue.shift();continue;}
+      const status=await v36RealtimeChannel.send({type:'broadcast',event:'factory_patch',payload:{site:item.site,revision:item.revision,kind:item.kind,origin:SYNC_CLIENT_ID,patch:item.patch,at:Date.now()}});
+      if(status!=='ok'&&status!==undefined)throw new Error(String(status));
+      v40PatchQueue.shift();
+    }
+  }catch(error){
+    if(String(error?.message||error)!=='realtime-not-ready')console.warn('Immediate central patch failed; retrying',error);
+    v40PatchRetryTimer=setTimeout(v40SendCentralPatches,650);
+  }finally{v40PatchSending=false;}
+}
+
+function v40ReceiveCentralPatch(patch,revision=0,kind='state'){
+  if(v32PatchIsEmpty(patch)||Number(revision||0)<Number(productionRevision||0))return false;
+  const draft=v40CaptureFormDrafts();
+  v32ApplyRemotePatch(patch,revision);v40RestoreFormDrafts(draft);
+  v23BaseSnapshot=v23Clone(productionSnapshot());v26WriteLocalSnapshot(factorySite(),productionSnapshot());
+  remoteSyncState='ready';v23LastError='';v23SyncIndicator('online');v38RefreshSharedMenu();
+  showFactoryToast?.(`ข้อมูล ${factorySite().toUpperCase()} อัปเดตแบบเรียลไทม์แล้ว`,'success');
+  return true;
+}
+
+const v40BasePersistSections=v32PersistSectionChanges;
+v32PersistSectionChanges=async function(){
+  const patch=v32SectionBaseline?v32BuildPatch(v32SectionBaseline,productionSnapshot()):null,before=Number(productionRevision||0);
+  const result=await v40BasePersistSections();
+  if(Number(productionRevision||0)>before&&!v32PatchIsEmpty(patch))v40QueueCentralPatch(patch,productionRevision,'sections');
+  return result;
+};
+
+const v40BasePersistMachine=v29PersistMachineDelta;
+v29PersistMachineDelta=async function(machine){
+  const before=Number(productionRevision||0),copy=v32Clone(machine),result=await v40BasePersistMachine(machine);
+  if(Number(productionRevision||0)>before&&copy)v40QueueCentralPatch({arrayPatch:{machinesState:{key:'number',upsert:[copy],remove:[]}}},productionRevision,'machine');
+  return result;
+};
+
+queueRemoteSave=function(){
+  if(!productionToken()||productionApplying||Date.now()<v29DeltaSaveUntil)return;
+  v38CentralSavePending=true;clearTimeout(productionSaveTimer);clearTimeout(v38CentralSaveTimer);
+  productionSaveTimer=setTimeout(()=>{v38CentralSavePending=false;v32PersistSectionChanges();},35);
+};
+
+async function v40FlushCentralState(){
+  clearTimeout(productionSaveTimer);clearTimeout(v38CentralSaveTimer);v23SyncIndicator('syncing');
+  for(let attempt=0;attempt<8;attempt++){
+    if(!v32SectionSaveBusy)await v32PersistSectionChanges();
+    const dirty=v32SectionBaseline&&!v32PatchIsEmpty(v32BuildPatch(v32SectionBaseline,productionSnapshot()));
+    if(!dirty){v23SyncIndicator('online');return true;}
+    await new Promise(resolve=>setTimeout(resolve,70));
+  }
+  queueRemoteSave();return false;
+}
+
+function v40NextTicketId(){
+  const numbers=(ticketsState||[]).map(ticket=>Number(String(ticket?.id||'').match(/\d+/)?.[0]||0));
+  const next=Math.max((ticketsState||[]).length+1,...numbers.map(number=>number+1),1);
+  return`TKT-${String(next).padStart(3,'0')}`;
+}
+
+submitNewTicket=async function(event){
+  event.preventDefault();if(v40TicketSubmitBusy)return;
+  const form=document.getElementById('newTicketForm');if(!form?.reportValidity())return;
+  const target=document.getElementById('tktTarget').value.trim(),dept=document.getElementById('tktDept').value.trim(),problem=document.getElementById('tktProblem').value.trim(),dueDate=document.getElementById('tktDueDate').value,reporter=document.getElementById('tktReporter').value.trim(),date=document.getElementById('tktDate').value||pmToday();
+  const file=document.getElementById('ticketReporterPhoto')?.files?.[0],id=v40NextTicketId(),now=new Date().toISOString();
+  const ticket={id,_serverId:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,date,rawDate:date,time:new Date().toTimeString().slice(0,5),target,dept,problem,dueDate,reporter,tech:'',recipient:'',duration:'',spareParts:'',cause:'',actionTaken:'',ticketStage:'awaiting_technician',status:TICKET_STAGES.awaiting_technician.label,createdAt:now,updatedAt:now};
+  const button=form.querySelector('button[type="submit"]'),oldHtml=button?.innerHTML||'';v40TicketSubmitBusy=true;if(button){button.disabled=true;button.innerHTML='<i class="fa-solid fa-spinner fa-spin mr-2"></i>กำลังบันทึกส่วนกลาง';}
+  try{
+    ticketsState.push(ticket);logTicket(ticket,'awaiting_technician','ผู้แจ้งส่งใบแจ้งซ่อมให้ช่าง');
+    recordFactoryAlert('ticket',{ticket:ticket.id,machine:ticket.target,department:ticket.dept,reporter:ticket.reporter,problem:ticket.problem});
+    if(file)storeTicketPhoto(file,ticket,'reporterPhoto');
+    form.reset();const ticketDate=document.getElementById('tktDate');if(ticketDate)ticketDate.value=pmToday();
+    renderTechTab();renderTicketHistoryTab();updateTicketWorkflowUI();updateTabBadges();switchTicketTab('tab-form');showTicketSubmitDocumentActions(ticket);
+    const saved=await v40FlushCentralState();
+    showFactoryToast(saved?`ส่งใบแจ้งซ่อม ${ticket.id} เข้าส่วนกลางแล้ว`:`รับใบแจ้งซ่อม ${ticket.id} แล้ว และกำลังส่งส่วนกลาง`,saved?'success':'alert');
+  }finally{v40TicketSubmitBusy=false;if(button){button.disabled=false;button.innerHTML=oldHtml;}}
+};
+
+function v40SyncTicketMutation(ticket){if(ticket){ticket.updatedAt=new Date().toISOString();saveAppState();}void v40FlushCentralState();}
+const v40BaseAcceptTicket=acceptTicket;
+acceptTicket=function(id){const result=v40BaseAcceptTicket(id);v40SyncTicketMutation((ticketsState||[]).find(ticket=>String(ticket.id)===String(id)));return result;};
+const v40BaseSaveCloseTicket=saveCloseTicketData;
+saveCloseTicketData=function(){const id=document.getElementById('closeTicketId')?.value,result=v40BaseSaveCloseTicket();v40SyncTicketMutation((ticketsState||[]).find(ticket=>String(ticket.id)===String(id)));return result;};
+const v40BaseSaveAssignTicket=saveAssignTicketData;
+saveAssignTicketData=function(){const id=document.getElementById('assignTicketId')?.value,result=v40BaseSaveAssignTicket();v40SyncTicketMutation((ticketsState||[]).find(ticket=>String(ticket.id)===String(id)));return result;};
+const v40BaseWaitingParts=markAsWaitingForParts;
+markAsWaitingForParts=function(){const id=document.getElementById('closeTicketId')?.value,result=v40BaseWaitingParts();v40SyncTicketMutation((ticketsState||[]).find(ticket=>String(ticket.id)===String(id)));return result;};
+
+window.addEventListener('focus',()=>{void v40SendCentralPatches();v38ScheduleCentralPull(0,'focus');});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){void v40SendCentralPatches();v38ScheduleCentralPull(0,'visible');}});
+window.addEventListener('online',()=>{void v40SendCentralPatches();v38ScheduleCentralPull(0,'online');});
 
 </script>
 </body>
